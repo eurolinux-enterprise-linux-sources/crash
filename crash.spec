@@ -4,7 +4,7 @@
 Summary: Kernel crash and live system analysis utility
 Name: crash
 Version: 7.1.0
-Release: 6%{?dist}
+Release: 8%{?dist}
 License: GPLv3
 Group: Development/Debuggers
 Source: http://people.redhat.com/anderson/crash-%{version}.tar.gz
@@ -21,6 +21,8 @@ Patch3: flattened_format_fixes.patch
 Patch4: timer_command_fix.patch
 Patch5: fix_sadump_read_failures.patch
 Patch6: sadump_read_excluded_pages.patch
+Patch7: lkcd_trace.patch
+Patch8: backport_of_github_d833432f_kpti_trampoline.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -48,6 +50,8 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %patch4 -p1 -b timer_command_fix.patch
 %patch5 -p1 -b fix_sadump_read_failures.patch
 %patch6 -p1 -b sadump_read_excluded_pages.patch
+%patch7 -p1 -b lkcd_trace.patch
+%patch8 -p1 -b backport_of_github_d833432f_kpti_trampoline.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -76,6 +80,14 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
+* Wed Apr 18 2018 Dave Anderson <anderson@redhat.com> - 7.1.0-8.el6
+- Add support for KPTI entry trampoline stack
+  Resolves: rhbz#1567738
+
+* Thu Apr 12 2018 Dave Anderson <anderson@redhat.com> - 7.1.0-7.el6
+- LKCD backtrace fixes
+  Resolves: rhbz#1552558
+
 * Wed Feb 03 2016 Dave Anderson <anderson@redhat.com> - 7.1.0-6.el6
 - crash fails to read excluded pages by default on sadump-related formats
   Resolves: rhbz#1304262
