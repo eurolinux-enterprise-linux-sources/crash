@@ -1,0 +1,154 @@
+commit 0f65ae0c36bf04e22219f28c32c3ae0cdee5acfe
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Fri Dec 7 15:17:37 2018 -0500
+
+    Implemented a new plugin function for the readline library's tab
+    completion feature.  Without the patch, the use of the default plugin
+    from the embedded gdb module has been seen to cause segmentation
+    violations or other fatal malloc/free/corruption assertions.  The new
+    plugin takes gdb out of the picture entirely, and also restricts the
+    matching options to just symbol names, so as not to clutter the
+    results with irrelevant filenames.
+    (anderson@redhat.com)
+
+diff --git a/cmdline.c b/cmdline.c
+index cf3e150..665f48c 100644
+--- a/cmdline.c
++++ b/cmdline.c
+@@ -40,6 +40,8 @@ int shell_command(char *);
+ static void modify_orig_line(char *, struct args_input_file *);
+ static void modify_expression_arg(char *, char **, struct args_input_file *);
+ static int verify_args_input_file(char *);
++static char *crash_readline_completion_generator(const char *, int);
++static char **crash_readline_completer(const char *, int, int);
+ 
+ #define READLINE_LIBRARY
+ 
+@@ -2071,6 +2073,9 @@ readline_init(void)
+ 	if (STREQ(pc->editing_mode, "emacs")) {
+         	rl_editing_mode = emacs_mode;
+ 	}
++
++	rl_attempted_completion_function = crash_readline_completer;
++	rl_attempted_completion_over = 1;
+ }
+ 
+ /*
+@@ -2605,3 +2610,27 @@ exec_args_input_file(struct command_table_entry *ct, struct args_input_file *aif
+ 	fclose(pc->args_ifile);
+ 	pc->args_ifile = NULL;
+ }
++
++static char *
++crash_readline_completion_generator(const char *match, int state)
++{
++	static struct syment *sp_match;
++
++	if (state == 0)
++		sp_match = NULL;
++
++	sp_match = symbol_complete_match(match, sp_match);
++
++	if (sp_match)
++		return(strdup(sp_match->name));
++	else
++		return NULL;
++}
++
++static char **
++crash_readline_completer(const char *match, int start, int end)
++{
++	rl_attempted_completion_over = 1;
++	return rl_completion_matches(match, crash_readline_completion_generator);
++}
++
+diff --git a/defs.h b/defs.h
+index 9ce32c1..a3cb5a4 100644
+--- a/defs.h
++++ b/defs.h
+@@ -5138,6 +5138,7 @@ void parse_for_member_extended(struct datatype_member *, ulong);
+ void add_to_downsized(char *);
+ int is_downsized(char *);
+ int is_string(char *, char *);
++struct syment *symbol_complete_match(const char *, struct syment *);
+ 
+ /*  
+  *  memory.c 
+diff --git a/symbols.c b/symbols.c
+index 05628ff..0769294 100644
+--- a/symbols.c
++++ b/symbols.c
+@@ -13071,3 +13071,73 @@ is_downsized(char *name)
+ 
+ 	return FALSE;
+ }
++
++struct syment *
++symbol_complete_match(const char *match, struct syment *sp_last)
++{
++	int i;
++	struct syment *sp, *sp_end, *sp_start;
++	struct load_module *lm;
++	int search_init;
++
++	if (sp_last) {
++		sp_start = next_symbol(NULL, sp_last);
++		if (!sp_start)
++			return NULL;
++	} else	
++		sp_start = st->symtable;
++
++	if ((sp_start >= st->symtable) && (sp_start < st->symend)) {
++		for (sp = sp_start; sp < st->symend; sp++) {
++			if (STRNEQ(sp->name, match))
++				return sp;
++		}
++		sp_start = NULL;
++	}
++
++	search_init = FALSE;
++
++	for (i = 0; i < st->mods_installed; i++) {
++		lm = &st->load_modules[i];
++		if (lm->mod_flags & MOD_INIT)
++			search_init = TRUE;
++		sp_end = lm->mod_symend;
++		if (!sp_start)
++			sp_start = lm->mod_symtable;
++
++		if ((sp_start >= lm->mod_symtable) && (sp_start < sp_end)) {
++			for (sp = sp_start; sp < sp_end; sp++) {
++				if (MODULE_START(sp))
++					continue;
++	
++				if (STRNEQ(sp->name, match))
++					return sp;
++			}
++			sp_start = NULL;
++		}
++	}
++
++	if (!search_init)
++		return NULL;
++	
++	for (i = 0; i < st->mods_installed; i++) {
++		lm = &st->load_modules[i];
++		if (!lm->mod_init_symtable)
++			continue;
++		sp_end = lm->mod_init_symend;
++		if (!sp_start)
++			sp_start = lm->mod_init_symtable;
++
++		if ((sp_start >= lm->mod_init_symtable) && (sp_start < sp_end)) {
++			for (sp = sp_start; sp < sp_end; sp++) {
++				if (MODULE_START(sp))
++					continue;
++	
++				if (STRNEQ(sp->name, match))
++					return sp;
++			}
++		}
++	}
++
++	return NULL;
++}

@@ -1,0 +1,45 @@
+commit 28fa7bd09013455b5ddc020dea4706278cda0d65
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Tue Jun 19 16:31:54 2018 -0400
+
+    Fix for PPC64 kernel virtual address translation in Linux 4.17 and
+    later kernels with commit c2b4d8b7417a59b7f9a52d0d8402f5257cbbd398,
+    titled "powerpc/mm/hash64: Increase the VA range", in which the
+    maximum virtual address value has been increased to 4PB.  Without
+    the patch, the translation/access of high vmalloc space addresses
+    fails; for example, the "kmem -[sS]" option fails the translation
+    of per-cpu kmem_cache_cpu addresses located in vmalloc space, with
+    the error messages "kmem: invalid kernel virtual address: <address>
+    type: kmem_cache_cpu.freelist" and "kmem: invalid kernel virtual
+    address: <address>  type: kmem_cache_cpu.page", and the "vtop"
+    command shows the addresses as "(not mapped)".
+    (hbathini@linux.ibm.com)
+
+diff --git a/defs.h b/defs.h
+index 6e6f6be..e6e3850 100644
+--- a/defs.h
++++ b/defs.h
+@@ -3978,6 +3978,7 @@ struct efi_memory_desc_t {
+ #define PMD_INDEX_SIZE_L4_64K_4_12 10
+ #define PUD_INDEX_SIZE_L4_64K_4_12 7
+ #define PGD_INDEX_SIZE_L4_64K_4_12 8
++#define PUD_INDEX_SIZE_L4_64K_4_17 10
+ #define PTE_INDEX_SIZE_RADIX_64K  5
+ #define PMD_INDEX_SIZE_RADIX_64K  9
+ #define PUD_INDEX_SIZE_RADIX_64K  9
+diff --git a/ppc64.c b/ppc64.c
+index 0dd8a2a..f5d0dac 100644
+--- a/ppc64.c
++++ b/ppc64.c
+@@ -451,7 +451,10 @@ ppc64_init(int when)
+ 
+ 					if (THIS_KERNEL_VERSION >= LINUX(4,12,0)) {
+ 						m->l2_index_size = PMD_INDEX_SIZE_L4_64K_4_12;
+-						m->l3_index_size = PUD_INDEX_SIZE_L4_64K_4_12;
++						if (THIS_KERNEL_VERSION >= LINUX(4,17,0))
++							m->l3_index_size = PUD_INDEX_SIZE_L4_64K_4_17;
++						else
++							m->l3_index_size = PUD_INDEX_SIZE_L4_64K_4_12;
+ 						m->l4_index_size = PGD_INDEX_SIZE_L4_64K_4_12;
+ 					} else {
+ 						m->l2_index_size = PMD_INDEX_SIZE_L4_64K_4_6;

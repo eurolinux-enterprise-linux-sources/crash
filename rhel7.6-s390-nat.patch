@@ -1,0 +1,21 @@
+--- crash-7.2.3/gdb-7.6.patch.orig
++++ crash-7.2.3/gdb-7.6.patch
+@@ -2392,3 +2392,18 @@ diff -up gdb-7.6/opcodes/configure.orig
+                  req->flags |= GNU_COMMAND_FAILED;
+  }
+  
++--- gdb-7.6/gdb/s390-nat.c.orig
+++++ gdb-7.6/gdb/s390-nat.c
++@@ -31,6 +31,12 @@
++ #include "elf/common.h"
++ 
++ #include <asm/ptrace.h>
+++#undef PTRACE_PEEKUSR_AREA
+++#undef PTRACE_POKEUSR_AREA
+++#undef PTRACE_GET_LAST_BREAK
+++#undef PTRACE_ENABLE_TE
+++#undef PTRACE_DISABLE_TE
+++#undef PTRACE_TE_ABORT_RAND
++ #include <sys/ptrace.h>
++ #include <asm/types.h>
++ #include <sys/procfs.h>

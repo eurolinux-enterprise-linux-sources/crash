@@ -1,0 +1,149 @@
+commit b9d76838372d1b4087bb506ce6da425afad68876
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Thu Jun 7 13:20:16 2018 -0400
+
+    If /proc/kcore gets selected for the live memory source because
+    /dev/mem was configured with CONFIG_STRICT_DEVMEM, its ELF header
+    contents are not displayed by "help -[dD]", and are not displayed
+    when the crash session is invoked with -d<number>".  Without the
+    patch, the ELF contents are only displayed in those two situations
+    if "/proc/kcore" is explicitly entered on the crash command line.
+    (anderson@redhat.com)
+
+diff --git a/netdump.c b/netdump.c
+index 25683eb..1f3e26c 100644
+--- a/netdump.c
++++ b/netdump.c
+@@ -4334,11 +4334,8 @@ kcore_memory_dump(FILE *ofp)
+ 	Elf32_Phdr *lp32;
+ 	Elf64_Phdr *lp64;
+ 
+-	if (!(pkd->flags & KCORE_LOCAL))
+-		return FALSE;
+-
+ 	fprintf(ofp, "proc_kcore_data:\n");
+-	fprintf(ofp, "       flags: %lx (", nd->flags);
++	fprintf(ofp, "       flags: %x (", pkd->flags);
+ 	others = 0;
+ 	if (pkd->flags & KCORE_LOCAL)
+ 		fprintf(ofp, "%sKCORE_LOCAL", others++ ? "|" : "");
+commit c79a11fa10da94b71ddf341ec996c522fbd75237
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Fri Jun 8 14:31:08 2018 -0400
+
+    If the default live memory source /dev/mem is determined to be
+    unusable because the kernel was configured with CONFIG_STRICT_DEVMEM,
+    the first memory read during session initialization will fail.  The
+    current behavior results in a readmem() error message, followed by two
+    notification messages that indicate that /dev/mem is restricted and
+    a switch to using /proc/kcore will be attempted; the readmem is
+    reattempted from /proc/kcore, and if successful, the session will
+    continue initialization.  With this patch, the behavior will change
+    such that if the switch to /proc/kcore and the reattempted readmem()
+    are successful, no messages will be displayed unless the crash
+    session is invoked with "crash -d&lt;number>".
+    (anderson@redhat.com)
+
+diff --git a/kernel.c b/kernel.c
+index 138a47f..3cd5bf1 100644
+--- a/kernel.c
++++ b/kernel.c
+@@ -882,7 +882,7 @@ cpu_maps_init(void)
+ {
+         int i, c, m, cpu, len;
+         char *buf;
+-        ulong *maskptr, addr;
++        ulong *maskptr, addr, error_handle;
+ 	struct mapinfo {
+ 		ulong cpu_flag;
+ 		char *name;
+@@ -902,8 +902,9 @@ cpu_maps_init(void)
+ 		if (!(addr = cpu_map_addr(mapinfo[m].name)))
+ 			continue;
+ 
++		error_handle = pc->flags & DEVMEM ? RETURN_ON_ERROR|QUIET : RETURN_ON_ERROR;
+ 		if (!readmem(addr, KVADDR, buf, len,
+-		    mapinfo[m].name, RETURN_ON_ERROR)) {
++		    mapinfo[m].name, error_handle)) {
+ 			error(WARNING, "cannot read cpu_%s_map\n",
+ 			      mapinfo[m].name);
+ 			continue;
+diff --git a/memory.c b/memory.c
+index 82f9cbf..2f568d5 100644
+--- a/memory.c
++++ b/memory.c
+@@ -2243,9 +2243,11 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
+ 				error(INFO, READ_ERRMSG, memtype_string(memtype, 0), addr, type);
+ 			if ((pc->flags & DEVMEM) && (kt->flags & PRE_KERNEL_INIT) &&
+ 			    !(error_handle & NO_DEVMEM_SWITCH) && devmem_is_restricted() && 
+-			    switch_to_proc_kcore())
++			    switch_to_proc_kcore()) {
++				error_handle &= ~QUIET;
+ 				return(readmem(addr, memtype, bufptr, size,
+ 					type, error_handle));
++			}
+ 			goto readmem_error;
+ 
+ 		case PAGE_EXCLUDED:
+@@ -2457,7 +2459,7 @@ devmem_is_restricted(void)
+ 		    QUIET|RETURN_ON_ERROR|NO_DEVMEM_SWITCH))
+ 			restricted = TRUE;
+ 
+-		if (restricted)
++		if (restricted && CRASHDEBUG(1))
+ 			error(INFO, 
+  	    		    "this kernel may be configured with CONFIG_STRICT_DEVMEM,"
+ 			    " which\n       renders /dev/mem unusable as a live memory "
+@@ -2472,9 +2474,10 @@ switch_to_proc_kcore(void)
+ {
+ 	close(pc->mfd);
+ 
+-	if (file_exists("/proc/kcore", NULL))
+-		error(INFO, "trying /proc/kcore as an alternative to /dev/mem\n\n");
+-	else
++	if (file_exists("/proc/kcore", NULL)) {
++		if (CRASHDEBUG(1))
++			error(INFO, "trying /proc/kcore as an alternative to /dev/mem\n\n");
++	} else
+ 		return FALSE;
+ 
+ 	if ((pc->mfd = open("/proc/kcore", O_RDONLY)) < 0) {
+diff --git a/ppc64.c b/ppc64.c
+index 0b04187..0dd8a2a 100644
+--- a/ppc64.c
++++ b/ppc64.c
+@@ -1,7 +1,7 @@
+ /* ppc64.c -- core analysis suite
+  *
+- * Copyright (C) 2004-2015,2017 David Anderson
+- * Copyright (C) 2004-2015,2017 Red Hat, Inc. All rights reserved.
++ * Copyright (C) 2004-2015,2018 David Anderson
++ * Copyright (C) 2004-2015,2018 Red Hat, Inc. All rights reserved.
+  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
+  *
+  * This program is free software; you can redistribute it and/or modify
+@@ -343,8 +343,9 @@ ppc64_init(int when)
+ 
+ 		if (symbol_exists("vmemmap_populate")) {
+ 			if (symbol_exists("vmemmap")) {
+-				get_symbol_data("vmemmap", sizeof(void *),
+-					&machdep->machspec->vmemmap_base);
++				readmem(symbol_value("vmemmap"), KVADDR,
++					&machdep->machspec->vmemmap_base,
++					sizeof(void *), "vmemmap", QUIET|FAULT_ON_ERROR);
+ 			} else
+ 				machdep->machspec->vmemmap_base =
+ 					VMEMMAP_REGION_ID << REGION_SHIFT;
+diff --git a/x86_64.c b/x86_64.c
+index 54b6539..e01082b 100644
+--- a/x86_64.c
++++ b/x86_64.c
+@@ -356,7 +356,7 @@ x86_64_init(int when)
+ 			machdep->flags |= RANDOMIZED;
+ 			readmem(symbol_value("page_offset_base"), KVADDR,
+ 				&machdep->machspec->page_offset, sizeof(ulong),
+-				"page_offset_base", FAULT_ON_ERROR);
++				"page_offset_base", QUIET|FAULT_ON_ERROR);
+ 			machdep->kvbase = machdep->machspec->page_offset;
+ 			machdep->identity_map_base = machdep->machspec->page_offset;
+ 		}

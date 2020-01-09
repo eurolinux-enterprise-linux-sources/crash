@@ -1,0 +1,27 @@
+commit 1926150ee350e17fee2aeabb8ef781222d94366e
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Mon Jun 11 13:46:41 2018 -0400
+
+    Fix for the ppc64/ppc64le "bt" command on Linux 4.7 and later kernels
+    that contain commit d8bff643d81a58181356c0aa3ab771ac10da6894,
+    titled "[x86] asm: Make sure verify_cpu() has a good stack", which
+    inadvertently breaks the ppc64/ppc64le kernel stack size calculation
+    when running with crash-7.2.2 or later.  Without the patch, "bt" may
+    fail with a filtered kdump dumpfile with the two error messages
+    "bt: page excluded: kernel virtual address: <address> type: stack
+    contents" and "bt: read of stack at <address> failed".
+    (anderson@redhat.com)
+
+diff --git a/task.c b/task.c
+index f6956d5..1b32629 100644
+--- a/task.c
++++ b/task.c
+@@ -440,7 +440,7 @@ task_init(void)
+ 	} else if (VALID_SIZE(thread_union) && 
+ 	    	((len = SIZE(thread_union)) != STACKSIZE())) {
+ 		machdep->stacksize = len;
+-	} else {
++	} else if (!VALID_SIZE(thread_union) && !VALID_SIZE(task_union)) {
+ 		if (kernel_symbol_exists("__start_init_task") &&
+ 		    kernel_symbol_exists("__end_init_task")) {
+ 			len = symbol_value("__end_init_task");

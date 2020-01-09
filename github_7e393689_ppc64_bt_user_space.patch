@@ -1,0 +1,49 @@
+commit 7e3936895386ea6e85a6dc01bc5027f8133d12bb
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Mon Sep 17 14:33:08 2018 -0400
+
+    An addendum to crash commit 5fe78861ea1589084f6a2956a6ff63677c9269e1,
+    this patch for the PPC64 "bt" command prevents an invalid error
+    message from being displayed when an active non-panic task is
+    interrupted while running in user space.  Without the patch, the
+    command correctly indicates "Task is running in user space", dumps
+    the user-space exception frame, but then prints the invalid error
+    message "bt: invalid kernel virtual address: ffffffffffffff90 type:
+    Regs NIP value".
+    (anderson@redhat.com)
+
+diff --git a/ppc64.c b/ppc64.c
+index 03fecd3..8badcde 100644
+--- a/ppc64.c
++++ b/ppc64.c
+@@ -2254,6 +2254,7 @@ ppc64_vmcore_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
+ {
+ 	struct ppc64_pt_regs *pt_regs;
+ 	unsigned long unip;
++	int in_user_space = FALSE;
+ 
+ 	pt_regs = (struct ppc64_pt_regs *)bt_in->machdep;
+ 	if (!pt_regs || !pt_regs->gpr[1]) {
+@@ -2272,10 +2273,11 @@ ppc64_vmcore_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
+ 			FAULT_ON_ERROR);
+ 		*nip = unip;
+ 	} else {
+-		if (IN_TASK_VMA(bt_in->task, *ksp))
++		if (IN_TASK_VMA(bt_in->task, *ksp)) {
+ 			fprintf(fp, "%0lx: Task is running in user space\n",
+ 				bt_in->task);
+-		else
++			in_user_space = TRUE;
++		} else
+ 			fprintf(fp, "%0lx: Invalid Stack Pointer %0lx\n",
+ 				bt_in->task, *ksp);
+ 		*nip = pt_regs->nip;
+@@ -2289,6 +2291,8 @@ ppc64_vmcore_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
+ 	 * Print the collected regs for the active task
+ 	 */
+ 	ppc64_print_regs(pt_regs);
++	if (in_user_space)
++		return TRUE;
+ 	if (!IS_KVADDR(*ksp))
+ 		return FALSE;
+ 

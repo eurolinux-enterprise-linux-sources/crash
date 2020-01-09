@@ -1,0 +1,45 @@
+commit 9446958fe211825ed5524317b05d5ea020bb00d6
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Fri Jun 1 14:01:01 2018 -0400
+
+    Fix to address a "__builtin___snprintf_chk" compiler warning if bpf.c
+    is compiled with -D_FORTIFY_SOURCE=2.
+    (anderson@redhat.com)
+
+diff --git a/bpf.c b/bpf.c
+index 305d49f..ee1986f 100644
+--- a/bpf.c
++++ b/bpf.c
+@@ -362,7 +362,7 @@ do_bpf(ulong flags, ulong prog_id, ulong map_id, int radix)
+ 			fprintf(fp, "     LOAD_TIME: ");
+ 			if (VALID_MEMBER(bpf_prog_aux_load_time)) {
+ 				load_time = ULONGLONG(bpf->bpf_prog_aux_buf + OFFSET(bpf_prog_aux_load_time));
+-				print_boot_time(load_time, buf5, BUFSIZE);
++				print_boot_time(load_time, buf5, BUFSIZE/2);
+ 				fprintf(fp, "%s\n", buf5);
+ 			} else
+ 				fprintf(fp, "(unknown)\n");
+
+commit 95daa11b82dfa6aa3e68ffc92e1282abc1b2b62a
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Fri Jun 1 15:28:55 2018 -0400
+
+    Fix for the "bpf -t" option.  Although highly unlikely, without the
+    patch, the target function name of a BPF bytecode call instruction
+    may fail to be resolved correctly.
+    (anderson@redhat.com)
+
+diff --git a/bpf.c b/bpf.c
+index ee1986f..427263d 100644
+--- a/bpf.c
++++ b/bpf.c
+@@ -1060,8 +1060,7 @@ static char *__func_get_name(const struct bpf_insn *insn,
+ 		return buff;
+ 
+ 	if (insn->src_reg != BPF_PSEUDO_CALL &&
+-	    insn->imm >= 0 && insn->imm < __BPF_FUNC_MAX_ID &&
+-	    func_id_str[insn->imm]) {
++	    insn->imm >= 0 && insn->imm < __BPF_FUNC_MAX_ID) {
+ //              return func_id_str[insn->imm];
+ 		if (!readmem(symbol_value("func_id_str") + (insn->imm * sizeof(void *)), 
+ 		    KVADDR, &func_id_ptr, sizeof(void *), "func_id_str pointer", 

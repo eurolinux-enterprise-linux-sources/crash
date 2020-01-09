@@ -3,8 +3,8 @@
 #
 Summary: Kernel analysis utility for live systems, netdump, diskdump, kdump, LKCD or mcore dumpfiles
 Name: crash
-Version: 7.2.0
-Release: 6%{?dist}
+Version: 7.2.3
+Release: 10%{?dist}
 License: GPLv3
 Group: Development/Debuggers
 Source: http://people.redhat.com/anderson/crash-%{version}.tar.gz
@@ -15,13 +15,20 @@ Buildroot: %{_tmppath}/%{name}-%{version}-%{release}-buildroot-%(%{__id_u} -n)
 BuildRequires: ncurses-devel zlib-devel lzo-devel bison snappy-devel
 Requires: binutils
 Patch0: lzo_snappy.patch
-Patch1: github_da9bd35a_to_e2efacdd.patch
-Patch2: github_f852f5ce_to_03a3e57b.patch
-Patch3: github_494a796e_to_63419fb9.patch
-Patch4: github_d833432f_kpti_trampoline.patch
-Patch5: github_1e488cfe_to_1160ba19.patch
-Patch6: github_a38e3ec4_machine_kexec.patch
-Patch7: github_ddace972_exception_frame.patch
+Patch1: rhel7.6-s390-nat.patch
+Patch2: github_46d21219.patch
+Patch3: github_a6cd8408_mach-m.patch
+Patch4: github_da49e201_cpu_entry_area.patch
+Patch5: github_9446958f_95daa11b_bpf_covscan.patch
+Patch6: github_b9d76838_c79a11fa_proc_kcore.patch
+Patch7: github_1926150e_ppc64_stacksize.patch
+Patch8: github_f294197b_bpf_idr.patch
+Patch9: github_28fa7bd0_ppc64_increase_VA_range.patch
+Patch10: github_5fe78861_ppc64_invalid_NIP.patch
+Patch11: github_7e393689_ppc64_bt_user_space.patch
+Patch12: github_6596f112_alternate_list_loop_detect.patch
+Patch13: github_0f65ae0c_readline_tab_completion.patch
+Patch14: github_6b93714b_cmdline.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -43,13 +50,20 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %prep
 %setup -n %{name}-%{version} -q
 %patch0 -p1 -b lzo_snappy.patch
-%patch1 -p1 -b github_87179026_to_ad3b8476.patch
-%patch2 -p1 -b github_f852f5ce_to_03a3e57b.patch
-%patch3 -p1 -b github_494a796e_to_63419fb9.patch
-%patch4 -p1 -b github_d833432f_kpti_trampoline.patch
-%patch5 -p1 -b github_1e488cfe_to_1160ba19.patch
-%patch6 -p1 -b github_a38e3ec4_machine_kexec.patch
-%patch7 -p1 -b github_ddace972_exception_frame.patch
+%patch1 -p1 -b rhel7.6-s390-nat.patch
+%patch2 -p1 -b github_46d21219.patch
+%patch3 -p1 -b github_a6cd8408_mach-m.patch
+%patch4 -p1 -b github_da49e201_cpu_entry_area.patch
+%patch5 -p1 -b github_9446958f_95daa11b_bpf_covscan.patch
+%patch6 -p1 -b github_b9d76838_c79a11fa_proc_kcore.patch
+%patch7 -p1 -b github_1926150e_ppc64_stacksize.patch
+%patch8 -p1 -b github_f294197b_bpf_idr.patch
+%patch9 -p1 -b github_28fa7bd0_ppc64_increase_VA_range.patch
+%patch10 -p1 -b github_5fe78861_ppc64_invalid_NIP.patch
+%patch11 -p1 -b github_7e393689_ppc64_bt_user_space.patch
+%patch12 -p1 -b github_6596f112_alternate_list_loop_detect.patch
+%patch13 -p1 -b github_0f65ae0c_readline_tab_completion.patch
+%patch14 -p1 -b github_6b93714b_cmdline.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -78,6 +92,54 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
+* Tue Jan  8 2019 Dave Anderson <anderson@redhat.com> - 7.2.3-10
+- Restrict command line to 1500 bytes
+  Resolves: rhbz#1663792
+
+* Wed Jan  2 2019 Dave Anderson <anderson@redhat.com> - 7.2.3-9
+- Alternate list loop detection option
+  Resolves: rhbz#1595389
+- Readline library tab completion plugin
+  Resolves: rhbz#1656165
+
+* Mon Sep 17 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-8
+- Fix ppc64 "bt" command failure reporting invalid NIP value for a user-space task. 
+  Resolves: rhbz#1617936
+
+* Thu Sep 13 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-7
+- Support ppc64 increased VA range
+- Fix ppc64 "bt" command failure reporting invalid NIP value
+  Resolves: rhbz#1617936
+
+* Fri Jul  6 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-6
+- Fix for RHEL7 kernel's eBPF support that uses old IDR facility
+  Resolves: rhbz#1559758
+
+* Mon Jun 11 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-5
+- Rebase to github commits b9d76838 to c79a11fa
+  Resolves: rhbz#1559460
+- Fix ppc64/ppc6le stacksize calculation
+  Resolves: rhbz#1589685
+
+* Fri Jun  1 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-4
+- Fix bpf.c covscan issues
+  Resolves: rhbz#1559758
+
+* Fri Jun  1 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-3
+- Rebase to github commits a6cd8408 to da49e201 
+  Resolves: rhbz#1559460
+
+* Tue May 29 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-2
+- Work around rhel-7.6 s390/s390x ptrace.h incompatiblity FTBFS issue
+- Rebase to github commit 46d21219
+  Resolves: rhbz#1559460
+
+* Fri May 18 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-1
+- Rebase to upstream version 7.2.3
+  Resolves: rhbz#1559460
+- eBPF support with new bpf command
+  Resolves: rhbz#1559758
+
 * Mon Feb 12 2018 Dave Anderson <anderson@redhat.com> - 7.2.0-6
 - Fix arm64 backtrace issues seen in Linux 4.14
   Resolves: rhbz#1542312

@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,18 +38,18 @@ static void display_bh_1(void);
 static void display_bh_2(void);
 static void display_bh_3(void);
 static void display_bh_4(void);
-static void dump_hrtimer_data(void);
+static void dump_hrtimer_data(const ulong *cpus);
 static void dump_hrtimer_clock_base(const void *, const int);
 static void dump_hrtimer_base(const void *, const int);
 static void dump_active_timers(const void *, ulonglong);
 static int get_expires_len(const int, const ulong *, const int);
 static void print_timer(const void *);
 static ulonglong ktime_to_ns(const void *);
-static void dump_timer_data(void);
-static void dump_timer_data_tvec_bases_v1(void);
-static void dump_timer_data_tvec_bases_v2(void);
-static void dump_timer_data_tvec_bases_v3(void);
-static void dump_timer_data_timer_bases(void);
+static void dump_timer_data(const ulong *cpus);
+static void dump_timer_data_tvec_bases_v1(const ulong *cpus);
+static void dump_timer_data_tvec_bases_v2(const ulong *cpus);
+static void dump_timer_data_tvec_bases_v3(const ulong *cpus);
+static void dump_timer_data_timer_bases(const ulong *cpus);
 struct tv_range;
 static void init_tv_ranges(struct tv_range *, int, int, int);
 static int do_timer_list(ulong,int, ulong *, void *,ulong *,struct tv_range *);
@@ -253,7 +253,9 @@ kernel_init()
 			kt->utsname.domainname : "(not printable)");
 	}
 
-	strncpy(buf, kt->utsname.release, MIN(strlen(kt->utsname.release), 65));
+	strncpy(buf, kt->utsname.release, 65);
+	if (buf[64])
+		buf[64] = NULLCHAR;
 	if (ascii_string(kt->utsname.release)) {
 		char separator;
 
@@ -1258,11 +1260,11 @@ verify_namelist()
 {
 	int i;
 	char command[BUFSIZE];
-	char buffer[BUFSIZE];
-	char buffer2[BUFSIZE];
-	char buffer3[BUFSIZE];
-	char buffer4[BUFSIZE];
-	char buffer5[BUFSIZE];
+	char buffer[BUFSIZE/2];
+	char buffer2[BUFSIZE/2];
+	char buffer3[BUFSIZE/2];
+	char buffer4[BUFSIZE/2];
+	char buffer5[BUFSIZE*2];
 	char *p1;
 	FILE *pipe;
 	int found;
@@ -1292,7 +1294,7 @@ verify_namelist()
 
 	found = FALSE;
 	sprintf(buffer3, "(unknown)");
-        while (fgets(buffer, BUFSIZE-1, pipe)) {
+        while (fgets(buffer, (BUFSIZE/2)-1, pipe)) {
 		if (!strstr(buffer, "Linux version 2.") &&
 		    !strstr(buffer, "Linux version 3.") &&
 		    !strstr(buffer, "Linux version 4.") &&
@@ -1379,12 +1381,12 @@ verify_namelist()
         else
                 sprintf(buffer, "%s", ACTIVE() ? "live system" : pc->dumpfile);
 
-	sprintf(buffer2, " %s is %s -- %s is %s\n",
+	sprintf(buffer5, " %s is %s -- %s is %s\n",
                 namelist, namelist_smp ? "SMP" : "not SMP",
                 buffer, target_smp ? "SMP" : "not SMP");
 
 	error(INFO, "incompatible arguments: %s%s",
-		strlen(buffer2) > 48 ? "\n  " : "", buffer2);
+		strlen(buffer5) > 48 ? "\n  " : "", buffer5);
 
         program_usage(SHORT_FORM);
 }
@@ -1396,7 +1398,7 @@ static void
 source_tree_init(void)
 {
 	FILE *pipe;
-	char command[BUFSIZE];
+	char command[BUFSIZE*2];
 	char buf[BUFSIZE];
 
 	if (!is_directory(kt->source_tree)) {
@@ -1429,7 +1431,7 @@ list_source_code(struct gnu_request *req, int count_entered)
 	int argc, line, last, done, assembly;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
-	char buf3[BUFSIZE];
+	char buf3[BUFSIZE*2];
 	char file[BUFSIZE];
         char *argv[MAXARGS];
 	struct syment *sp;
@@ -2555,7 +2557,7 @@ cmd_bt(void)
 			} else {
 				bt->flags |= BT_CPUMASK;				
 				BZERO(arg_buf, BUFSIZE);
-				strncpy(arg_buf, optarg, strlen(optarg));
+				strcpy(arg_buf, optarg);
 				cpus = get_cpumask_buf();
 			}
 			break;
@@ -2890,6 +2892,11 @@ back_trace(struct bt_info *bt)
 			return;
  	}
 
+	if (bt->stackbase == 0) {
+		fprintf(fp, "(no stack)\n");
+		return;
+	}
+
 	fill_stackbuf(bt);
 
 	if (CRASHDEBUG(4)) {
@@ -2964,6 +2971,8 @@ back_trace(struct bt_info *bt)
 		get_xendump_regs(bt, &eip, &esp);
 	else if (SADUMP_DUMPFILE())
 		get_sadump_regs(bt, &eip, &esp);
+	else if (VMSS_DUMPFILE())
+		get_vmware_vmss_regs(bt, &eip, &esp);
         else if (REMOTE_PAUSED()) {
 		if (!is_task_active(bt->task) || !get_remote_regs(bt, &eip, &esp))
 			machdep->get_stack_frame(bt, &eip, &esp);
@@ -4741,7 +4750,7 @@ find_module_objfile(char *modref, char *filename, char *tree)
 	retbuf = module_objfile_search(modref, filename, tree);
 
 	if (!retbuf) {
-		strncpy(tmpref, modref, BUFSIZE);
+		strncpy(tmpref, modref, BUFSIZE-1);
 		for (c = 0; c < BUFSIZE && tmpref[c]; c++)
 			if (tmpref[c] == '_')
 				tmpref[c] = '-';
@@ -6237,7 +6246,7 @@ cmd_irq(void)
 			} else {
 				choose_cpu = 1;
 				BZERO(arg_buf, BUFSIZE);
-				strncpy(arg_buf, optarg, strlen(optarg));
+				strcpy(arg_buf, optarg);
 			}
 			break;
 
@@ -6981,8 +6990,8 @@ generic_get_irq_affinity(int irq)
 		BZERO(buf, BUFSIZE);
 		if (read_string(name, buf, BUFSIZE-1)) {
 			if (strlen(name_buf) != 0)
-				strncat(name_buf, ",", 2);
-			strncat(name_buf, buf, strlen(buf));
+				strcat(name_buf, ",");
+			strcat(name_buf, buf);
 		}
 
 		readmem(action+OFFSET(irqaction_next), KVADDR,
@@ -7121,8 +7130,8 @@ generic_show_interrupts(int irq, ulong *cpus)
 		BZERO(buf2, BUFSIZE);
 		if (read_string(name, buf2, BUFSIZE-1)) {
 			if (strlen(name_buf) != 0)
-				strncat(name_buf, ",", 2);
-			strncat(name_buf, buf2, strlen(buf2));
+				strcat(name_buf, ",");
+			strcat(name_buf, buf2);
 		}
 
 		readmem(action+OFFSET(irqaction_next), KVADDR,
@@ -7353,14 +7362,22 @@ cmd_timer(void)
 {
         int c;
 	int rflag;
+	char *cpuspec;
+	ulong *cpus = NULL;
 
 	rflag = 0;
 
-        while ((c = getopt(argcnt, args, "r")) != EOF) {
+        while ((c = getopt(argcnt, args, "rC:")) != EOF) {
                 switch(c)
                 {
 		case 'r':
 			rflag = 1;
+			break;
+
+		case 'C':
+			cpuspec = optarg;
+			cpus = get_cpumask_buf();
+			make_cpumask(cpuspec, cpus, FAULT_ON_ERROR, NULL);
 			break;
 
                 default:
@@ -7373,15 +7390,18 @@ cmd_timer(void)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
 	if (rflag)
-		dump_hrtimer_data();
+		dump_hrtimer_data(cpus);
 	else
-		dump_timer_data();
+		dump_timer_data(cpus);
+
+	if (cpus)
+		FREEBUF(cpus);
 }
 
 static void
-dump_hrtimer_data(void)
+dump_hrtimer_data(const ulong *cpus)
 {
-	int i, j;
+	int i, j, k = 0;
 	int hrtimer_max_clock_bases, max_hrtimer_bases;
 	struct syment * hrtimer_bases;
 
@@ -7405,7 +7425,10 @@ dump_hrtimer_data(void)
 	hrtimer_bases = per_cpu_symbol_search("hrtimer_bases");
 
 	for (i = 0; i < kt->cpus; i++) {
-		if (i)
+		if (cpus && !NUM_IN_BITMAP(cpus, i))
+			continue;
+
+		if (k++)
 			fprintf(fp, "\n");
 
 		if (hide_offline_cpu(i)) {
@@ -7752,7 +7775,7 @@ struct tv_range {
 #define TVN (6)
 
 static void
-dump_timer_data(void)
+dump_timer_data(const ulong *cpus)
 {
 	int i;
 	ulong timer_active;
@@ -7773,16 +7796,16 @@ dump_timer_data(void)
         struct tv_range tv[TVN];
 
 	if (kt->flags2 & TIMER_BASES) {
-		dump_timer_data_timer_bases();
+		dump_timer_data_timer_bases(cpus);
 		return;
 	} else if (kt->flags2 & TVEC_BASES_V3) {
-		dump_timer_data_tvec_bases_v3();
+		dump_timer_data_tvec_bases_v3(cpus);
 		return;
 	} else if (kt->flags & TVEC_BASES_V2) {
-		dump_timer_data_tvec_bases_v2();
+		dump_timer_data_tvec_bases_v2(cpus);
 		return;
 	} else if (kt->flags & TVEC_BASES_V1) {
-		dump_timer_data_tvec_bases_v1();
+		dump_timer_data_tvec_bases_v1(cpus);
 		return;
 	}
 		
@@ -7924,7 +7947,7 @@ dump_timer_data(void)
  */
 
 static void
-dump_timer_data_tvec_bases_v1(void)
+dump_timer_data_tvec_bases_v1(const ulong *cpus)
 {
 	int i, cpu, tdx, flen;
         struct timer_data *td;
@@ -7947,6 +7970,11 @@ dump_timer_data_tvec_bases_v1(void)
 	cpu = 0;
 
 next_cpu:
+	if (cpus && !NUM_IN_BITMAP(cpus, cpu)) {
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+		return;
+	}
 
         count = 0;
         td = (struct timer_data *)NULL;
@@ -8039,7 +8067,7 @@ next_cpu:
  */
 
 static void
-dump_timer_data_tvec_bases_v2(void)
+dump_timer_data_tvec_bases_v2(const ulong *cpus)
 {
 	int i, cpu, tdx, flen;
         struct timer_data *td;
@@ -8073,6 +8101,11 @@ dump_timer_data_tvec_bases_v2(void)
 	cpu = 0;
 
 next_cpu:
+	if (cpus && !NUM_IN_BITMAP(cpus, cpu)) {
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+		return;
+	}
 	/*
 	 * hide data of offline cpu and goto next cpu
 	 */
@@ -8185,7 +8218,7 @@ next_cpu:
  *  Linux 4.2 timers use new tvec_root, tvec and timer_list structures
  */
 static void
-dump_timer_data_tvec_bases_v3(void)
+dump_timer_data_tvec_bases_v3(const ulong *cpus)
 {
 	int i, cpu, tdx, flen;
 	struct timer_data *td;
@@ -8216,6 +8249,11 @@ dump_timer_data_tvec_bases_v3(void)
 	cpu = 0;
 
 next_cpu:
+	if (cpus && !NUM_IN_BITMAP(cpus, cpu)) {
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+		return;
+	}
 	/*
 	 * hide data of offline cpu and goto next cpu
 	 */
@@ -8758,9 +8796,9 @@ do_timer_list_v4(struct timer_bases_data *data)
  *  Linux 4.8 timers use new timer_bases[][]
  */
 static void
-dump_timer_data_timer_bases(void)
+dump_timer_data_timer_bases(const ulong *cpus)
 {
-	int i, cpu, flen, base, nr_bases, found, display;
+	int i, cpu, flen, base, nr_bases, found, display, j = 0;
 	struct syment *sp;
 	ulong timer_base, jiffies, function;
 	struct timer_bases_data data;
@@ -8785,6 +8823,11 @@ dump_timer_data_timer_bases(void)
 		RJUST|LONG_DEC,MKSTR(jiffies)));
 
 next_cpu:
+	if (cpus && !NUM_IN_BITMAP(cpus, cpu)) {
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+		goto done;
+	}
 	/*
 	 * hide data of offline cpu and goto next cpu
 	 */
@@ -8803,7 +8846,7 @@ next_cpu:
 	else
 		timer_base = sp->value;
 
-	if (cpu)
+	if (j++)
 		fprintf(fp, "\n");
 next_base:
 
