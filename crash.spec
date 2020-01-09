@@ -4,7 +4,7 @@
 Summary: Kernel crash and live system analysis utility
 Name: crash
 Version: 7.1.0
-Release: 3%{?dist}
+Release: 3%{?dist}.1
 License: GPLv3
 Group: Development/Debuggers
 Source: http://people.redhat.com/anderson/crash-%{version}.tar.gz
@@ -17,6 +17,8 @@ Requires: binutils
 Patch0: lzo_snappy.patch
 Patch1: sadump_16TB.patch
 Patch2: handle_corrupt_pid_hash.patch
+Patch3: fix_sadump_read_failures.patch
+Patch4: sadump_read_excluded_pages.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -40,6 +42,8 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %patch0 -p1 -b lzo_snappy.patch
 %patch1 -p1 -b sadump_16TB.patch
 %patch2 -p1 -b handle_corrupt_pid_hash.patch
+%patch3 -p1 -b fix_sadump_read_failures.patch
+%patch4 -p1 -b sadump_read_excluded_pages.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -68,6 +72,14 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
+* Thu Feb 04 2016 Dave Anderson <anderson@redhat.com> - 7.1.0-3.el6_7.1
+- crash fails to read excluded pages by default on sadump-related formats
+  Resolves: rhbz#1304709
+  
+* Tue Nov 24 2015 Dave Anderson <anderson@redhat.com> - 7.1.0-3.el6_7
+- crash fails to read or wrongly reads some parts of memory in sadump vmcore format
+  Resolves: rhbz#1284762
+
 * Tue Apr 21 2015 Dave Anderson <anderson@redhat.com> - 7.1.0-3.el6
 - Fortify the error handling of task gathering from the pid_hash[]
   chains during session initialization to prevent an endless loop if

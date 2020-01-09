@@ -1,0 +1,50 @@
+commit 5e887f898c709f912686addde1e046dd1639c97b
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Tue Oct 20 11:54:59 2015 -0400
+
+    Fix for the behavior of the --zero_excluded option when used with
+    SADUMP dumpfiles.  Without the patch, the behavior of --zero_excluded
+    option is the opposite to what is expected: reads of filtered pages
+    return successfully with zero-filled memory, while reads of filtered
+    filtered pages fail when --zero_excluded option has been specified.
+    (d.hatayama@jp.fujitsu.com)
+
+diff --git a/sadump.c b/sadump.c
+index 2806521..7cad15a 100644
+--- a/sadump.c
++++ b/sadump.c
+@@ -790,7 +790,7 @@ int read_sadump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
+ 	if ((pfn >= sd->max_mapnr) || !page_is_ram(pfn))
+ 		return SEEK_ERROR;
+ 	if (!page_is_dumpable(pfn)) {
+-		if (sd->flags & SADUMP_ZERO_EXCLUDED)
++		if (!(sd->flags & SADUMP_ZERO_EXCLUDED))
+ 			return PAGE_EXCLUDED;
+ 		memset(bufptr, 0, cnt);
+ 		return cnt;
+
+commit ebca719c1906bd7bd7f8f6ab0e158be23437c6e2
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Tue Oct 20 11:48:05 2015 -0400
+
+    Fix for bitmap-handling in SADUMP dumpfiles, which associate each bit
+    in a bitmap with a physical page in the reverse order that is used
+    in kdump-compressed format.  The bug had not been detected for a long
+    time because bitmaps in SADUMP formats consist mostly of 0x00 and
+    0xff excluding a very limited amount of memory space for firmware.
+    (indou.takao@jp.fujitsu.com, d.hatayama@jp.fujitsu.com)
+
+diff --git a/sadump.c b/sadump.c
+index bc67354..2806521 100644
+--- a/sadump.c
++++ b/sadump.c
+@@ -715,7 +715,7 @@ is_set_bit(char *bitmap, uint64_t pfn)
+ 	ulong index, bit;
+ 
+ 	index = pfn >> 3;
+-	bit = pfn & 7;
++	bit = 7 - (pfn & 7);
+ 
+ 	return !!(bitmap[index] & (1UL << bit));
+ }
+
