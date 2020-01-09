@@ -4,7 +4,7 @@
 Summary: Kernel crash and live system analysis utility
 Name: crash
 Version: 7.1.0
-Release: 3%{?dist}
+Release: 6%{?dist}
 License: GPLv3
 Group: Development/Debuggers
 Source: http://people.redhat.com/anderson/crash-%{version}.tar.gz
@@ -17,7 +17,10 @@ Requires: binutils
 Patch0: lzo_snappy.patch
 Patch1: sadump_16TB.patch
 Patch2: handle_corrupt_pid_hash.patch
-Patch3: fix_sadump_read_failures.patch
+Patch3: flattened_format_fixes.patch
+Patch4: timer_command_fix.patch
+Patch5: fix_sadump_read_failures.patch
+Patch6: sadump_read_excluded_pages.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -41,7 +44,10 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %patch0 -p1 -b lzo_snappy.patch
 %patch1 -p1 -b sadump_16TB.patch
 %patch2 -p1 -b handle_corrupt_pid_hash.patch
-%patch3 -p1 -b fix_sadump_read_failures.patch
+%patch3 -p1 -b flattened_format_fixes.patch
+%patch4 -p1 -b timer_command_fix.patch
+%patch5 -p1 -b fix_sadump_read_failures.patch
+%patch6 -p1 -b sadump_read_excluded_pages.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -70,9 +76,22 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
-* Tue Nov 24 2015 Dave Anderson <anderson@redhat.com> - 7.1.0-3.el6_7
+* Wed Feb 03 2016 Dave Anderson <anderson@redhat.com> - 7.1.0-6.el6
+- crash fails to read excluded pages by default on sadump-related formats
+  Resolves: rhbz#1304262
+
+* Mon Nov 23 2015 Dave Anderson <anderson@redhat.com> - 7.1.0-5.el6
 - crash fails to read or wrongly reads some parts of memory in sadump vmcore format
-  Resolves: rhbz#1284762
+  Resolves: rhbz#1283000
+
+* Mon Nov  2 2015 Dave Anderson <anderson@redhat.com> - 7.1.0-4.el6
+- Fixes for the handling of truncated/incomplete flat-format vmcores, which
+  may cause the session to hang during initialization.
+  Resolves: rhbz#1231976
+- Fix for the "timer" command, which may fail with the error message
+  "timer: cannot allocate any more memory!" when run on a kernel with
+  an extremely large number of cpus.
+  Resolves: rhbz#1238403
 
 * Tue Apr 21 2015 Dave Anderson <anderson@redhat.com> - 7.1.0-3.el6
 - Fortify the error handling of task gathering from the pid_hash[]
