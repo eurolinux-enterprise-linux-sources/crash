@@ -1,0 +1,108 @@
+    Add support for more than 16TB of physical memory space in the SADUMP
+    dumpfile format.  Without the patch, there is a limitation caused
+    by several 32-bit members of dump_header structure, in particular
+    the max_mapnr member, which overflows if the dumpfile contains more
+    than 16TB of physical memory space.  The header_version member of
+    the dump_header structure has been increased from 0 to 1 in this
+    extended new format, and the new 64-bit members will be used.
+    (d.hatayama@jp.fujitsu.com)
+
+diff --git a/sadump.c b/sadump.c
+index d7c6701..bc67354 100644
+--- a/sadump.c
++++ b/sadump.c
+@@ -20,6 +20,7 @@
+ #include "sadump.h"
+ #include <arpa/inet.h> /* htonl, htons */
+ #include <elf.h>
++#include <inttypes.h>
+ 
+ enum {
+ 	failed = -1
+@@ -325,6 +326,20 @@ restart:
+ 
+ 	flags |= SADUMP_LOCAL;
+ 
++	switch (sh->header_version) {
++	case 0:
++		sd->max_mapnr = (uint64_t)sh->max_mapnr;
++		break;
++	default:
++		error(WARNING,
++		      "sadump: unsupported header version: %u\n"
++		      "sadump: assuming header version: 1\n",
++		      sh->header_version);
++	case 1:
++		sd->max_mapnr = sh->max_mapnr_64;
++		break;
++	}
++
+ 	if (sh->sub_hdr_size > 0) {
+ 		if (!read_device(&smram_cpu_state_size, sizeof(uint32_t),
+ 				 &offset)) {
+@@ -772,7 +787,7 @@ int read_sadump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
+ 	curpaddr = paddr & ~((physaddr_t)(sd->block_size-1));
+ 	page_offset = paddr & ((physaddr_t)(sd->block_size-1));
+ 
+-	if ((pfn >= sd->dump_header->max_mapnr) || !page_is_ram(pfn))
++	if ((pfn >= sd->max_mapnr) || !page_is_ram(pfn))
+ 		return SEEK_ERROR;
+ 	if (!page_is_dumpable(pfn)) {
+ 		if (sd->flags & SADUMP_ZERO_EXCLUDED)
+@@ -979,6 +994,17 @@ int sadump_memory_dump(FILE *fp)
+ 	fprintf(fp, "      written_blocks: %u\n", sh->written_blocks);
+ 	fprintf(fp, "         current_cpu: %u\n", sh->current_cpu);
+ 	fprintf(fp, "             nr_cpus: %u\n", sh->nr_cpus);
++	if (sh->header_version >= 1) {
++		fprintf(fp,
++			"        max_mapnr_64: %" PRIu64 "\n"
++			" total_ram_blocks_64: %" PRIu64 "\n"
++			"    device_blocks_64: %" PRIu64 "\n"
++			"   written_blocks_64: %" PRIu64 "\n",
++			sh->max_mapnr_64,
++			sh->total_ram_blocks_64,
++			sh->device_blocks_64,
++			sh->written_blocks_64);
++	}
+ 
+ 	fprintf(fp, "\n    dump sub heaer: ");
+ 	if (sh->sub_hdr_size > 0) {
+@@ -1556,7 +1582,7 @@ static int block_table_init(void)
+ {
+ 	uint64_t pfn, section, max_section, *block_table;
+ 
+-	max_section = divideup(sd->dump_header->max_mapnr, SADUMP_PF_SECTION_NUM);
++	max_section = divideup(sd->max_mapnr, SADUMP_PF_SECTION_NUM);
+ 
+ 	block_table = calloc(sizeof(uint64_t), max_section);
+ 	if (!block_table) {
+diff --git a/sadump.h b/sadump.h
+index 09e313e..7f8e384 100644
+--- a/sadump.h
++++ b/sadump.h
+@@ -103,6 +103,14 @@ struct sadump_header {
+ 	uint32_t written_blocks;	/* Number of written blocks */
+ 	uint32_t current_cpu;	/* CPU# which handles dump */
+ 	uint32_t nr_cpus;	/* Number of CPUs */
++	/*
++	 * The members from below are supported in header version 1
++	 * and later.
++	 */
++	uint64_t max_mapnr_64;
++	uint64_t total_ram_blocks_64;
++	uint64_t device_blocks_64;
++	uint64_t written_blocks_64;
+ };
+ 
+ struct sadump_apic_state {
+@@ -209,6 +217,8 @@ struct sadump_data {
+ 	ulonglong backup_src_start;
+ 	ulong backup_src_size;
+ 	ulonglong backup_offset;
++
++	uint64_t max_mapnr;
+ };
+ 
+ struct sadump_data *sadump_get_sadump_data(void);
+
+

@@ -1,0 +1,22 @@
+--- crash-7.0.2/diskdump.c.orig
++++ crash-7.0.2/diskdump.c
+@@ -23,6 +23,8 @@
+  * GNU General Public License for more details.
+  */
+ 
++#define LZO
++#define SNAPPY
+ #include "defs.h"
+ #include "diskdump.h"
+ 
+--- crash-7.0.2/Makefile.orig
++++ crash-7.0.2/Makefile
+@@ -223,7 +223,7 @@ all: make_configure
+ gdb_merge: force
+ 	@if [ ! -f ${GDB}/README ]; then \
+ 	  make --no-print-directory gdb_unzip; fi
+-	@echo "${LDFLAGS} -lz -ldl -rdynamic" > ${GDB}/gdb/mergelibs
++	@echo "${LDFLAGS} -lz -llzo2 -lsnappy -ldl -rdynamic" > ${GDB}/gdb/mergelibs
+ 	@echo "../../${PROGRAM} ../../${PROGRAM}lib.a" > ${GDB}/gdb/mergeobj
+ 	@rm -f ${PROGRAM}
+ 	@if [ ! -f ${GDB}/config.status ]; then \
