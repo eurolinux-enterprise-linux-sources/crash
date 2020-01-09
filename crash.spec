@@ -3,8 +3,8 @@
 #
 Summary: Kernel analysis utility for live systems, netdump, diskdump, kdump, LKCD or mcore dumpfiles
 Name: crash
-Version: 7.1.9
-Release: 2%{?dist}
+Version: 7.2.0
+Release: 6%{?dist}
 License: GPLv3
 Group: Development/Debuggers
 Source: http://people.redhat.com/anderson/crash-%{version}.tar.gz
@@ -15,7 +15,13 @@ Buildroot: %{_tmppath}/%{name}-%{version}-%{release}-buildroot-%(%{__id_u} -n)
 BuildRequires: ncurses-devel zlib-devel lzo-devel bison snappy-devel
 Requires: binutils
 Patch0: lzo_snappy.patch
-Patch1: github_87179026_to_ad3b8476.patch
+Patch1: github_da9bd35a_to_e2efacdd.patch
+Patch2: github_f852f5ce_to_03a3e57b.patch
+Patch3: github_494a796e_to_63419fb9.patch
+Patch4: github_d833432f_kpti_trampoline.patch
+Patch5: github_1e488cfe_to_1160ba19.patch
+Patch6: github_a38e3ec4_machine_kexec.patch
+Patch7: github_ddace972_exception_frame.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -38,6 +44,12 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %setup -n %{name}-%{version} -q
 %patch0 -p1 -b lzo_snappy.patch
 %patch1 -p1 -b github_87179026_to_ad3b8476.patch
+%patch2 -p1 -b github_f852f5ce_to_03a3e57b.patch
+%patch3 -p1 -b github_494a796e_to_63419fb9.patch
+%patch4 -p1 -b github_d833432f_kpti_trampoline.patch
+%patch5 -p1 -b github_1e488cfe_to_1160ba19.patch
+%patch6 -p1 -b github_a38e3ec4_machine_kexec.patch
+%patch7 -p1 -b github_ddace972_exception_frame.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -66,6 +78,38 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
+* Mon Feb 12 2018 Dave Anderson <anderson@redhat.com> - 7.2.0-6
+- Fix arm64 backtrace issues seen in Linux 4.14
+  Resolves: rhbz#1542312
+
+* Fri Jan 26 2018 Dave Anderson <anderson@redhat.com> - 7.2.0-5
+- Additional support for analyzing an SADUMP dumpfile if KASLR
+  and KPTI are both enabled
+  Resolves: rhbz#1504467
+
+* Mon Jan 22 2018 Dave Anderson <anderson@redhat.com> - 7.2.0-4
+- Add support for KPTI entry trampoline stack
+  Resolves: rhbz#1534308
+ 
+* Thu Jan 11 2018 Dave Anderson <anderson@redhat.com> - 7.2.0-3
+- Rebase to github commits 494a796e to 63419fb9
+  Resolves: rhbz#1497316
+- Fix IRQ stack transition failure due to kernel's removal of 64-byte gap
+  Resolves: rhbz#1530887
+
+* Tue Nov 21 2017 Dave Anderson <anderson@redhat.com> - 7.2.0-2
+- Rebase to github commits f852f5ce to 03a3e57b
+  Resolves: rhbz#1497316
+
+* Wed Nov  1 2017 Dave Anderson <anderson@redhat.com> - 7.2.0-1
+- Rebase to upstream version 7.2.0
+- Rebase to github commits da9bd35a to e2efacdd
+  Resolves: rhbz#1497316
+- ppc64le: fix for "WARNING: cannot access vmalloc'd module memory"
+  Resolves: rhbz#1485391
+- Support for analyzing an SADUMP crash dump if KASLR is enabled
+  Resolves: rhbz#1504467
+
 * Wed May  3 2017 Dave Anderson <anderson@redhat.com> - 7.1.9-2
 - Rebase to github commits 87179026 to ad3b8476
   Resolves: rhbz#1393534
