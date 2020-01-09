@@ -1,0 +1,274 @@
+commit 8717902685706faf48d2c27eb943822ae8829ccc
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Mon May 1 15:14:36 2017 -0400
+
+    Fix for the "snap.so" extension module to pass the KASLR relocation
+    offset value in the dumpfile header for kernels that are compiled
+    with CONFIG_RANDOMIZE_BASE.  Without the patch, it is necessary to
+    use the "--kaslr=<offset>" command line option, or the session
+    fails with the message "WARNING: cannot read linux_banner string",
+    followed by "crash: vmlinux and vmcore do not match!".
+    (anderson@redhat.com)
+
+diff --git a/extensions/snap.c b/extensions/snap.c
+index 91af859..7c94618 100644
+--- a/extensions/snap.c
++++ b/extensions/snap.c
+@@ -1,7 +1,7 @@
+ /* snap.c - capture live memory into a kdump or netdump dumpfile
+  *
+- * Copyright (C) 2009, 2013 David Anderson
+- * Copyright (C) 2009, 2013 Red Hat, Inc. All rights reserved.
++ * Copyright (C) 2009, 2013, 2014, 2017 David Anderson
++ * Copyright (C) 2009, 2013, 2014, 2017 Red Hat, Inc. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -423,7 +423,10 @@ generate_elf_header(int type, int fd, char *filename)
+ 	ushort e_machine;
+ 	int num_segments;
+ 	struct node_table *nt;
+-	ulonglong task_struct;
++	struct SNAP_info {
++		ulonglong task_struct;
++		ulonglong relocate;
++	} SNAP_info;
+ 
+ 	num_segments = vt->numnodes;
+ 
+@@ -606,9 +609,10 @@ generate_elf_header(int type, int fd, char *filename)
+ 	notes->p_filesz += len;
+ 
+   	/* NT_TASKSTRUCT note */
+-	task_struct = CURRENT_TASK();
++	SNAP_info.task_struct = CURRENT_TASK();
++	SNAP_info.relocate = kt->relocate;
+ 	len = dump_elf_note (ptr, NT_TASKSTRUCT, "SNAP",
+-		(char *)&task_struct, sizeof(ulonglong));
++		(char *)&SNAP_info, sizeof(struct SNAP_info));
+ 	offset += len;
+ 	ptr += len;
+ 	notes->p_filesz += len;
+diff --git a/netdump.c b/netdump.c
+index 409bc43..0772e02 100644
+--- a/netdump.c
++++ b/netdump.c
+@@ -1172,8 +1172,9 @@ netdump_memory_dump(FILE *fp)
+ 	netdump_print("            nt_prpsinfo: %lx\n", nd->nt_prpsinfo);
+ 	netdump_print("          nt_taskstruct: %lx\n", nd->nt_taskstruct);
+ 	netdump_print("            task_struct: %lx\n", nd->task_struct);
+-	netdump_print("              page_size: %d\n", nd->page_size);
++	netdump_print("               relocate: %lx\n", nd->relocate);
+ 	netdump_print("           switch_stack: %lx\n", nd->switch_stack);
++	netdump_print("              page_size: %d\n", nd->page_size);
+ 	dump_xen_kdump_data(fp);
+ 	netdump_print("     num_prstatus_notes: %d\n", nd->num_prstatus_notes);
+ 	netdump_print("         num_qemu_notes: %d\n", nd->num_qemu_notes);
+@@ -1912,8 +1913,6 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
+ 		if (store) {
+ 			nd->nt_taskstruct = (void *)note;
+ 			nd->task_struct = *((ulong *)(ptr + note->n_namesz));
+-			nd->switch_stack = *((ulong *)
+-				(ptr + note->n_namesz + sizeof(ulong)));
+ 		}
+ 		break;
+         case NT_DISKDUMP:
+@@ -2160,8 +2159,19 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
+ 		if (store) {
+ 			nd->nt_taskstruct = (void *)note;
+ 			nd->task_struct = *((ulong *)(ptr + note->n_namesz));
+-                        nd->switch_stack = *((ulong *)
+-                                (ptr + note->n_namesz + sizeof(ulong)));
++			if (pc->flags2 & SNAP) {
++				if (note->n_descsz == 16) {
++					nd->relocate = *((ulong *)
++						(ptr + note->n_namesz + sizeof(ulong)));
++					if (nd->relocate) {
++						kt->relocate = nd->relocate;
++						kt->flags |= RELOC_SET;
++						kt->flags2 |= KASLR;
++					}
++				}
++			} else if (machine_type("IA64"))
++				nd->switch_stack = *((ulong *)
++					(ptr + note->n_namesz + sizeof(ulong)));
+ 		}
+ 		break;
+         case NT_DISKDUMP:
+diff --git a/netdump.h b/netdump.h
+index b63eed7..ec6691c 100644
+--- a/netdump.h
++++ b/netdump.h
+@@ -1,7 +1,7 @@
+ /* netdump.h
+  *
+- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
++ * Copyright (C) 2002-2009, 2017 David Anderson
++ * Copyright (C) 2002-2009, 2017 Red Hat, Inc. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -77,6 +77,7 @@ struct vmcore_data {
+ 	ulonglong backup_src_start;
+ 	ulong backup_src_size;
+ 	ulonglong backup_offset;
++	ulong relocate;
+ };
+ 
+ #define DUMP_ELF_INCOMPLETE  0x1   /* dumpfile is incomplete */
+
+commit c85a70ba752ac31e729a753a03b836dc5591714b
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Mon May 1 15:40:21 2017 -0400
+
+    The native gdb "disassemble" command fails if the kernel has been
+    compiled with CONFIG_RANDOMIZE_BASE because the embedded gdb module
+    still operates under the assumption that the (non-relocated) text
+    locations in the vmlinux file are correct.  The error message that
+    is issued is somewhat confusing, indicating "No function contains
+    specified address".  This patch simply clarifies the error message
+    to indicate "crash: the gdb "disassemble" command is prohibited
+    because the kernel text was relocated by KASLR; use the crash "dis"
+    command instead."
+    (anderson@redhat.com)
+
+diff --git a/gdb_interface.c b/gdb_interface.c
+index 2f7f30d..873787b 100644
+--- a/gdb_interface.c
++++ b/gdb_interface.c
+@@ -737,6 +737,13 @@ is_restricted_command(char *cmd, ulong flags)
+ 				newline, newline, pc->program_name);
+ 		}
+ 	}
++
++	if (kt->relocate && 
++	    STRNEQ("disassemble", cmd) && STRNEQ(cmd, "disas"))
++               	error(FATAL, 
++		    "the gdb \"disassemble\" command is prohibited because the kernel text\n"
++		    "%swas relocated%s; use the crash \"dis\" command instead.\n",
++			space(strlen(pc->curcmd)+2), kt->flags2 & KASLR ? " by KASLR" : "");
+ 	
+ 	return FALSE;
+ }
+
+commit 14cbcd58c14cbb34912ebce75c99e8bf35d39aef
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Tue May 2 15:45:23 2017 -0400
+
+    Fix for the "mach -m" command in Linux 4.9 and later kernels that
+    contain commit 475339684ef19e46f4702e2d185a869a5c454688, titled
+    "x86/e820: Prepare e280 code for switch to dynamic storage", in
+    which the "e820" symbol was changed from a static e820map structure
+    to a pointer to an e820map structure.  Without the patch, the
+    command either displays just the header, or the header with several
+    nonsensical entries.
+    (anderson@redhat.com)
+
+diff --git a/x86_64.c b/x86_64.c
+index fbef125..74a0268 100644
+--- a/x86_64.c
++++ b/x86_64.c
+@@ -5332,7 +5332,10 @@ x86_64_display_memmap(void)
+         ulonglong addr, size;
+         uint type;
+ 
+-        e820 = symbol_value("e820");
++	if (get_symbol_type("e820", NULL, NULL) == TYPE_CODE_PTR)
++		get_symbol_data("e820", sizeof(void *), &e820);
++	else
++		e820 = symbol_value("e820");
+ 	if (CRASHDEBUG(1))
+ 		dump_struct("e820map", e820, RADIX(16));
+         buf = (char *)GETBUF(SIZE(e820map));
+
+commit a4a538caca140a8e948bbdae2be311168db7a1eb
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Tue May 2 16:51:53 2017 -0400
+
+    Fix for Linux 4.10 and later kdump dumpfiles, or kernels that have
+    backported commit 401721ecd1dcb0a428aa5d6832ee05ffbdbffbbe, titled
+    "kexec: export the value of phys_base instead of symbol address".
+    Without the patch, if the x86_64 "phys_base" value in the VMCOREINFO
+    note is a negative negative decimal number, the crash session fails
+    during session intialization with a "page excluded" or "seek error"
+    when reading "page_offset_base".
+    (anderson@redhat.com)
+
+diff --git a/x86_64.c b/x86_64.c
+index 74a0268..04364f9 100644
+--- a/x86_64.c
++++ b/x86_64.c
+@@ -6219,11 +6219,14 @@ x86_64_calc_phys_base(void)
+ 	 * Linux 4.10 exports it in VMCOREINFO (finally).
+ 	 */
+ 	if ((p1 = pc->read_vmcoreinfo("NUMBER(phys_base)"))) {
+-		machdep->machspec->phys_base = dtol(p1, QUIET, NULL);
+-		free(p1);
++		if (*p1 == '-')
++			machdep->machspec->phys_base = dtol(p1+1, QUIET, NULL) * -1;
++		else
++			machdep->machspec->phys_base = dtol(p1, QUIET, NULL);
+ 		if (CRASHDEBUG(1))
+-			fprintf(fp, "VMCOREINFO: phys_base: %lx\n", 
+-				machdep->machspec->phys_base);
++			fprintf(fp, "VMCOREINFO: NUMBER(phys_base): %s -> %lx\n", 
++				p1, machdep->machspec->phys_base);
++		free(p1);
+ 		return;
+ 	}
+ 
+
+commit ad3b84766beefedcfaa191dfd597f136f660a5b6
+Author: Dave Anderson <anderson@redhat.com>
+Date:   Wed May 3 10:29:37 2017 -0400
+
+    Fix for the PPC64 "pte" command.  Without the patch, if the target
+    PTE references a present page, the physical address is incorrect.
+    (anderson@redhat.com)
+
+diff --git a/ppc64.c b/ppc64.c
+index 15025d5..84cec09 100644
+--- a/ppc64.c
++++ b/ppc64.c
+@@ -1,7 +1,7 @@
+ /* ppc64.c -- core analysis suite
+  *
+- * Copyright (C) 2004-2015 David Anderson
+- * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
++ * Copyright (C) 2004-2015,2017 David Anderson
++ * Copyright (C) 2004-2015,2017 Red Hat, Inc. All rights reserved.
+  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
+  *
+  * This program is free software; you can redistribute it and/or modify
+@@ -1507,6 +1507,8 @@ ppc64_translate_pte(ulong pte, void *physaddr, ulonglong pte_rpn_shift)
+         char *arglist[MAXARGS];
+         ulong paddr;
+ 
++	if (STREQ(pc->curcmd, "pte"))
++		pte_rpn_shift = machdep->machspec->pte_rpn_shift;
+         paddr =  PTOB(pte >> pte_rpn_shift);
+         page_present = !!(pte & _PAGE_PRESENT);
+ 
+@@ -1517,12 +1519,12 @@ ppc64_translate_pte(ulong pte, void *physaddr, ulonglong pte_rpn_shift)
+ 
+         sprintf(ptebuf, "%lx", pte);
+         len1 = MAX(strlen(ptebuf), strlen("PTE"));
+-        fprintf(fp, "%s  ", mkstring(buf, len1, CENTER|LJUST, "PTE"));
+ 
+         if (!page_present && pte) {
+                 swap_location(pte, buf);
+                 if ((c = parse_line(buf, arglist)) != 3)
+                         error(FATAL, "cannot determine swap location\n");
++                fprintf(fp, "%s  ", mkstring(buf2, len1, CENTER|LJUST, "PTE"));
+ 
+                 len2 = MAX(strlen(arglist[0]), strlen("SWAP"));
+                 len3 = MAX(strlen(arglist[2]), strlen("OFFSET"));
+@@ -1541,6 +1543,7 @@ ppc64_translate_pte(ulong pte, void *physaddr, ulonglong pte_rpn_shift)
+                 return page_present;
+         }
+ 
++        fprintf(fp, "%s  ", mkstring(buf, len1, CENTER|LJUST, "PTE"));
+         sprintf(physbuf, "%lx", paddr);
+         len2 = MAX(strlen(physbuf), strlen("PHYSICAL"));
+         fprintf(fp, "%s  ", mkstring(buf, len2, CENTER|LJUST, "PHYSICAL"));

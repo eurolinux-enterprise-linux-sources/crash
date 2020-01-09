@@ -3,7 +3,7 @@
 #
 Summary: Kernel analysis utility for live systems, netdump, diskdump, kdump, LKCD or mcore dumpfiles
 Name: crash
-Version: 7.1.5
+Version: 7.1.9
 Release: 2%{?dist}
 License: GPLv3
 Group: Development/Debuggers
@@ -15,7 +15,7 @@ Buildroot: %{_tmppath}/%{name}-%{version}-%{release}-buildroot-%(%{__id_u} -n)
 BuildRequires: ncurses-devel zlib-devel lzo-devel bison snappy-devel
 Requires: binutils
 Patch0: lzo_snappy.patch
-Patch1: module_symbol_order.patch
+Patch1: github_87179026_to_ad3b8476.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -37,7 +37,7 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %prep
 %setup -n %{name}-%{version} -q
 %patch0 -p1 -b lzo_snappy.patch
-%patch1 -p1 -b module_symbol_order.patch
+%patch1 -p1 -b github_87179026_to_ad3b8476.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -66,6 +66,45 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
+* Wed May  3 2017 Dave Anderson <anderson@redhat.com> - 7.1.9-2
+- Rebase to github commits 87179026 to ad3b8476
+  Resolves: rhbz#1393534
+- Prohibit native gdb disassemble command when KASLR
+  Resolves: rhbz#1445649
+
+* Mon Apr 24 2017 Dave Anderson <anderson@redhat.com> - 7.1.9-1
+- Rebase to upstream version 7.1.9
+  Resolves: rhbz#1393534
+- Fix gdb "set scope" option for KASLR kernels.
+  Resolves: rhbz#1440725
+- Fix for the determination of the x86_64 "phys_base" value when it is
+  not passed in the VMCOREINFO data of ELF vmcores
+  Resolves: rhbz#1439170
+
+* Wed Mar  8 2017 Dave Anderson <anderson@redhat.com> - 7.1.8-2
+- mod [-sS] command may erroneously reassign module symbol addresses
+  Resolves: rhbz#1430091
+
+* Fri Feb 24 2017 Dave Anderson <anderson@redhat.com> - 7.1.8-1
+- Rebase to upstream version 7.1.8
+  Resolves: rhbz#1393534
+- POWER9 - Power ISA 3.0 related support for crash utility
+  Resolves: rhbz#1368711
+- crash package update - ppc64/ppc64le
+  Resolves: rhbz#1384944
+- exception RIP: unknown or invalid address
+  Resolves: rhbz#1350457
+- Crash does not always parse correctly the modules symbol tables
+  Resolves: rhbz#1360415
+- ARM64: crash live system from: WARNING: cannot read linux_banner string
+  Resolves: rhbz#1392007
+- kmem: invalid structure member offset: page_count
+  Resolves: rhbz#1392011
+- Kernel address space randomization [KASLR] support 
+  Resolves: rhbz#1392658
+- invalid structure size: tnt
+  Resolves: rhbz#1420653
+
 * Wed Sep 14 2016 Dave Anderson <anderson@redhat.com> - 7.1.5-2
 - Fix for kernel module symbol gathering when the ordering of module
   symbol name strings does not match the order of the kernel_symbol

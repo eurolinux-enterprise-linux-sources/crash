@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2016 David Anderson
- * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2017 David Anderson
+ * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -237,7 +237,7 @@ static int vm_area_page_dump(ulong, ulong, ulong, ulong, ulong,
 	struct reference *);
 static void rss_page_types_init(void);
 static int dump_swap_info(ulong, ulong *, ulong *);
-static int get_hugetlb_total_pages(ulong *);
+static int get_hugetlb_total_pages(ulong *, ulong *);
 static void swap_info_init(void);
 static char *get_swapdev(ulong, char *);
 static void fill_swap_info(ulong);
@@ -434,6 +434,10 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(page_count, "page", "_count");
 		if (INVALID_MEMBER(page_count))
 			ANON_MEMBER_OFFSET_INIT(page_count, "page", "_count");
+		if (INVALID_MEMBER(page_count))
+			MEMBER_OFFSET_INIT(page_count, "page", "_refcount");
+		if (INVALID_MEMBER(page_count))
+			ANON_MEMBER_OFFSET_INIT(page_count, "page", "_refcount");
 	}
 	MEMBER_OFFSET_INIT(page_flags, "page", "flags");
 	MEMBER_SIZE_INIT(page_flags, "page", "flags");
@@ -690,9 +694,15 @@ vm_init(void)
 		/*
 		 *  Common to slab/slub
 		 */
-		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
-		ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
-		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		if (INVALID_MEMBER(page_slab))
+			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		if (INVALID_MEMBER(page_slab_page))
+			ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		if (INVALID_MEMBER(page_first_page))
+			ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
 
 	} else if (MEMBER_EXISTS("kmem_cache", "cpu_slab") &&
 		STRUCT_EXISTS("kmem_cache_node")) {
@@ -713,22 +723,39 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_cache_node, "kmem_cache", "node");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_slab, "kmem_cache", "cpu_slab");
 		MEMBER_OFFSET_INIT(kmem_cache_list, "kmem_cache", "list");
+		MEMBER_OFFSET_INIT(kmem_cache_red_left_pad, "kmem_cache", "red_left_pad");
 		MEMBER_OFFSET_INIT(kmem_cache_name, "kmem_cache", "name");
 		MEMBER_OFFSET_INIT(kmem_cache_flags, "kmem_cache", "flags");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_freelist, "kmem_cache_cpu", "freelist");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_page, "kmem_cache_cpu", "page");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_node, "kmem_cache_cpu", "node");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_partial, "kmem_cache_cpu", "partial");
-		ANON_MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
-		ANON_MEMBER_OFFSET_INIT(page_offset, "page", "offset");
-		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab");
+		MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
+		if (INVALID_MEMBER(page_inuse))
+			ANON_MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
+		MEMBER_OFFSET_INIT(page_offset, "page", "offset");
+		if (INVALID_MEMBER(page_offset))
+			ANON_MEMBER_OFFSET_INIT(page_offset, "page", "offset");
+		MEMBER_OFFSET_INIT(page_slab, "page", "slab");
 		if (INVALID_MEMBER(page_slab))
-			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
-		ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
-		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
-		ANON_MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
+			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab");
+		if (INVALID_MEMBER(page_slab)) {
+			MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+			if (INVALID_MEMBER(page_slab))
+				ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		}
+		MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		if (INVALID_MEMBER(page_slab_page))
+			ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		if (INVALID_MEMBER(page_first_page))
+			ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
+		if (INVALID_MEMBER(page_freelist))
+			ANON_MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
 		if (INVALID_MEMBER(kmem_cache_objects)) {
 			MEMBER_OFFSET_INIT(kmem_cache_oo, "kmem_cache", "oo");
+			/* NOTE: returns offset of containing bitfield */
 			ANON_MEMBER_OFFSET_INIT(page_objects, "page", "objects");
 		}
 		if (VALID_MEMBER(kmem_cache_node)) {
@@ -4617,7 +4644,7 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
         tm->total_vm = ULONG(tt->mm_struct + OFFSET(mm_struct_total_vm));
         tm->pgd_addr = ULONG(tt->mm_struct + OFFSET(mm_struct_pgd));
 
-	if (is_kernel_thread(task))
+	if (is_kernel_thread(task) && !tm->rss)
 		return;
 
 	tm->pct_physmem = ((double)(tm->rss*100)) /
@@ -6352,8 +6379,13 @@ page_flags_init_from_pageflag_names(void)
 			break;
 		}
 
+		if ((mask == 0UL) && !name) {   /* Linux 4.6 and later */
+			len--;
+			break;
+		}
+
 		if (!read_string((ulong)name, namebuf, BUFSIZE-1)) {
-			error(INFO, "failed to read pageflag_names entry\n",
+			error(INFO, "failed to read pageflag_names entry (i: %d  name: \"%s\"  mask: %ld)\n",
 				i, name, mask);
 			goto pageflags_fail;
 		}
@@ -7395,8 +7427,8 @@ dump_free_pages_zones_v1(struct meminfo *fi)
  *  Callback function for free-list search for a specific page.
  */
 struct free_page_callback_data {
-	physaddr_t searchphys;
-	long block_size;	
+	ulong searchpage;
+	long chunk_size;
 	ulong page;
 	int found;
 };
@@ -7405,13 +7437,12 @@ static int
 free_page_callback(void *page, void *arg)
 {
 	struct free_page_callback_data *cbd = arg;
-	physaddr_t this_phys;
+	ulong first_page, last_page;
 
-	if (!page_to_phys((ulong)page, &this_phys))
-		return FALSE;
+	first_page = (ulong)page;
+	last_page = first_page + (cbd->chunk_size * SIZE(page));	
 
-	if ((cbd->searchphys >= this_phys) && 
-	    (cbd->searchphys < (this_phys + cbd->block_size))) {
+	if ((cbd->searchpage >= first_page) && (cbd->searchpage <= last_page)) {
 		cbd->page = (ulong)page;
 		cbd->found = TRUE;
 		return TRUE;
@@ -7437,6 +7468,7 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 	ulong offset, verbose, value, sum, found; 
 	ulong this_addr;
 	physaddr_t phys, this_phys, searchphys, end_paddr;
+	ulong searchpage;
 	struct free_page_callback_data callback_data;
 	ulong pp;
         ulong zone_mem_map;
@@ -7473,8 +7505,12 @@ dump_free_pages_zones_v2(struct meminfo *fi)
                         error(FATAL, 
 			    "dump_free_pages_zones_v2: no memtype specified\n");
                 }
+		if (!phys_to_page(searchphys, &searchpage)) {
+			error(INFO, "cannot determine page for %lx\n", fi->spec_addr);
+			return;
+		}
 		do_search = TRUE;
-		callback_data.searchphys = searchphys;
+		callback_data.searchpage = searchpage;
 		callback_data.found = FALSE;
         } else {
                 searchphys = 0;
@@ -8020,7 +8056,7 @@ multiple_lists:
 				ld->flags |= (LIST_CALLBACK|CALLBACK_RETURN);
 				ld->callback_func = free_page_callback;
 				ld->callback_data = (void *)callback_data;
-				callback_data->block_size = chunk_size * PAGESIZE();
+				callback_data->chunk_size = chunk_size;
 			}
 			cnt = do_list(ld);
 			if (cnt < 0) {
@@ -8075,7 +8111,8 @@ dump_kmeminfo(void)
 	long committed;
 	ulong overcommit_kbytes = 0;
 	int overcommit_ratio;
-	ulong hugetlb_total_pages;
+	ulong hugetlb_total_pages, hugetlb_total_free_pages = 0;
+	int done_hugetlb_calc = 0; 
 	long nr_file_pages, nr_slab;
 	ulong swapper_space_nrpages;
 	ulong pct;
@@ -8283,6 +8320,22 @@ dump_kmeminfo(void)
 			pages_to_size(freelowmem_pages, buf), pct);
         }
 
+	if (get_hugetlb_total_pages(&hugetlb_total_pages,
+	    &hugetlb_total_free_pages)) {
+		done_hugetlb_calc = 1;
+
+		fprintf(fp, "\n%13s  %7ld  %11s         ----\n", 
+			"TOTAL HUGE", hugetlb_total_pages, 
+			pages_to_size(hugetlb_total_pages, buf));
+		pct = hugetlb_total_free_pages ?
+			(hugetlb_total_free_pages * 100) /
+			hugetlb_total_pages : 0;
+		fprintf(fp, "%13s  %7ld  %11s  %3ld%% of TOTAL HUGE\n", 
+			"HUGE FREE",
+			hugetlb_total_free_pages,
+			pages_to_size(hugetlb_total_free_pages, buf), pct);
+	}
+
         /*
          *  get swap data from dump_swap_info().
          */
@@ -8293,12 +8346,12 @@ dump_kmeminfo(void)
 			fprintf(fp, "%13s  %7ld  %11s         ----\n", 
 				"TOTAL SWAP", totalswap_pages, 
 				pages_to_size(totalswap_pages, buf));
-				pct = totalswap_pages ? (totalused_pages * 100) /
-				totalswap_pages : 100;
+			pct = totalswap_pages ? (totalused_pages * 100) /
+				totalswap_pages : 0;
 			fprintf(fp, "%13s  %7ld  %11s  %3ld%% of TOTAL SWAP\n",
 				"SWAP USED", totalused_pages,
 				pages_to_size(totalused_pages, buf), pct);
-		 		pct = totalswap_pages ? 
+	 		pct = totalswap_pages ? 
 				((totalswap_pages - totalused_pages) *
 				100) / totalswap_pages : 0;
 			fprintf(fp, "%13s  %7ld  %11s  %3ld%% of TOTAL SWAP\n", 
@@ -8311,6 +8364,7 @@ dump_kmeminfo(void)
 			    "swap_info[%ld].swap_map at %lx is inaccessible\n",
 				totalused_pages, totalswap_pages);
 	}
+
 	/*
 	 * Show committed memory
 	 */
@@ -8328,7 +8382,7 @@ dump_kmeminfo(void)
 			get_symbol_data("sysctl_overcommit_ratio",
 				sizeof(int), &overcommit_ratio);
 
-			if (!get_hugetlb_total_pages(&hugetlb_total_pages))
+			if (!done_hugetlb_calc)
 				goto bailout;
 
 			allowed = ((totalram_pages - hugetlb_total_pages)
@@ -9849,6 +9903,7 @@ ignore_cache(struct meminfo *si, char *name)
 #define SLAB_MAGIC_DESTROYED    0xB2F23C5AUL    /* slab has been destroyed */
 
 #define SLAB_CFLGS_BUFCTL       0x020000UL      /* bufctls in own cache */
+#define SLAB_CFLGS_OBJFREELIST  0x40000000UL    /* Freelist as an object */
 
 #define KMEM_SLAB_ADDR          (1)
 #define KMEM_BUFCTL_ADDR        (2)
@@ -12408,11 +12463,13 @@ gather_slab_free_list_percpu(struct meminfo *si)
 static void
 gather_slab_free_list_slab_overload_page(struct meminfo *si)
 {
-	int i, active;
+	int i, active, start_offset;
 	ulong obj, objnr, cnt, freelist;
 	unsigned char *ucharptr;
 	unsigned short *ushortptr;
 	unsigned int *uintptr;
+	unsigned int cache_flags, overload_active;
+	ulong slab_overload_page;
 
 	if (CRASHDEBUG(1))
 		fprintf(fp, "slab page: %lx active: %ld si->c_num: %ld\n", 
@@ -12421,12 +12478,19 @@ gather_slab_free_list_slab_overload_page(struct meminfo *si)
 	if (si->s_inuse == si->c_num )
 		return;
 
-	readmem(si->slab - OFFSET(page_lru) + OFFSET(page_freelist),
+	slab_overload_page = si->slab - OFFSET(page_lru);
+	readmem(slab_overload_page + OFFSET(page_freelist),
 		KVADDR, &freelist, sizeof(void *), "page freelist",
 		FAULT_ON_ERROR);
         readmem(freelist, KVADDR, si->freelist, 
 		si->freelist_index_size * si->c_num,
                 "freelist array", FAULT_ON_ERROR);
+	readmem(si->cache+OFFSET(kmem_cache_s_flags),
+		KVADDR, &cache_flags, sizeof(uint),
+		"kmem_cache_s flags", FAULT_ON_ERROR);
+        readmem(slab_overload_page + OFFSET(page_active),
+                KVADDR, &overload_active, sizeof(uint),
+                "active", FAULT_ON_ERROR);
 
 	BNEG(si->addrlist, sizeof(ulong) * (si->c_num+1));
 	cnt = objnr = 0;
@@ -12435,14 +12499,22 @@ gather_slab_free_list_slab_overload_page(struct meminfo *si)
 	uintptr = NULL;
 	active = si->s_inuse;
 
+	/*
+	 * On an OBJFREELIST slab, the object might have been recycled
+	 * and everything before the active count can be random data.
+	 */
+	start_offset = 0;
+	if (cache_flags & SLAB_CFLGS_OBJFREELIST)
+		start_offset = overload_active;
+
 	switch (si->freelist_index_size)
 	{
-	case 1: ucharptr = (unsigned char *)si->freelist; break;
-	case 2: ushortptr = (unsigned short *)si->freelist; break;
-	case 4: uintptr = (unsigned int *)si->freelist; break;
+	case 1: ucharptr = (unsigned char *)si->freelist + start_offset; break;
+	case 2: ushortptr = (unsigned short *)si->freelist + start_offset; break;
+	case 4: uintptr = (unsigned int *)si->freelist + start_offset; break;
 	}
 
-	for (i = 0; i < si->c_num; i++) {
+	for (i = start_offset; i < si->c_num; i++) {
 		switch (si->freelist_index_size)
 		{
 		case 1: objnr = (ulong)*ucharptr++; break;
@@ -15239,19 +15311,21 @@ next_physpage(ulonglong paddr, ulonglong *nextpaddr)
 }
 
 static int
-get_hugetlb_total_pages(ulong *nr_total_pages)
+get_hugetlb_total_pages(ulong *nr_total_pages, ulong *nr_total_free_pages)
 {
 	ulong hstate_p, vaddr;
 	int i, len;
 	ulong nr_huge_pages;
+	ulong free_huge_pages;
 	uint horder;
 
-	*nr_total_pages = 0;
+	*nr_total_pages = *nr_total_free_pages = 0;
 	if (kernel_symbol_exists("hstates")) {
 
 		if (INVALID_SIZE(hstate) ||
 		    INVALID_MEMBER(hstate_order) ||
-		    INVALID_MEMBER(hstate_nr_huge_pages))
+		    INVALID_MEMBER(hstate_nr_huge_pages) ||
+		    INVALID_MEMBER(hstate_free_huge_pages))
 			return FALSE;
 
 		len = get_array_length("hstates", NULL, 0);
@@ -15271,7 +15345,12 @@ get_hugetlb_total_pages(ulong *nr_total_pages)
 				KVADDR, &nr_huge_pages, sizeof(ulong),
 				"hstate_nr_huge_pages", FAULT_ON_ERROR);
 
+			readmem(vaddr + OFFSET(hstate_free_huge_pages),
+				KVADDR, &free_huge_pages, sizeof(ulong),
+				"hstate_free_huge_pages", FAULT_ON_ERROR);
+
 			*nr_total_pages += nr_huge_pages * (1 << horder);
+			*nr_total_free_pages += free_huge_pages * (1 << horder);
 		}
 	} else if (kernel_symbol_exists("nr_huge_pages")) {
 		unsigned long hpage_shift = 21;
@@ -15280,8 +15359,12 @@ get_hugetlb_total_pages(ulong *nr_total_pages)
 			hpage_shift = 22;
 		get_symbol_data("nr_huge_pages",
 			sizeof(ulong), &nr_huge_pages);
+		get_symbol_data("free_huge_pages",
+			sizeof(ulong), &free_huge_pages);
 		*nr_total_pages = nr_huge_pages * ((1 << hpage_shift) /
 			machdep->pagesize);
+		*nr_total_free_pages = free_huge_pages *
+			((1 << hpage_shift) / machdep->pagesize);
 	}
 	return TRUE;
 }
@@ -16470,6 +16553,7 @@ memory_page_size(void)
 	case CRASHBUILTIN:
 	case KVMDUMP:
 	case PROC_KCORE:
+	case LIVE_RAMDUMP:
 		psz = (uint)getpagesize();  
 		break;
 
@@ -18307,6 +18391,8 @@ do_slab_slub(struct meminfo *si, int verbose)
 	ulong freelist, cpu_freelist, cpu_slab_ptr;
 	int i, free_objects, cpu_slab, is_free, node;
 	ulong p, q;
+#define SLAB_RED_ZONE 0x00000400UL
+	ulong flags, red_left_pad;
 
 	if (!si->slab) {
 		if (CRASHDEBUG(1))
@@ -18392,6 +18478,13 @@ do_slab_slub(struct meminfo *si, int verbose)
 			fprintf(fp, "< SLUB: free list END (%d found) >\n", i);
 	}
 
+	red_left_pad = 0;
+	if (VALID_MEMBER(kmem_cache_red_left_pad)) {
+		flags = ULONG(si->cache_buf + OFFSET(kmem_cache_flags));
+		if (flags & SLAB_RED_ZONE)
+			red_left_pad = ULONG(si->cache_buf + OFFSET(kmem_cache_red_left_pad));
+	}
+
 	for (p = vaddr; p < vaddr + objects * si->size; p += si->size) {
 		hq_open();
 		is_free = FALSE;
@@ -18407,7 +18500,7 @@ do_slab_slub(struct meminfo *si, int verbose)
 				}
 				if (q & PAGE_MAPPING_ANON)
 					break;
-				if (p == q) {
+				if ((p + red_left_pad) == q) {
 					is_free = TRUE;
 					goto found_object;
 				}
@@ -18432,7 +18525,8 @@ do_slab_slub(struct meminfo *si, int verbose)
 
 		fprintf(fp, "  %s%lx%s", 
 			is_free ? " " : "[",
-			p, is_free ? "  " : "]");
+			pc->flags2 & REDZONE ? p : p + red_left_pad,
+			is_free ? "  " : "]");
 		if (is_free && (cpu_slab >= 0))
 			fprintf(fp, "(cpu %d cache)", cpu_slab);
 		fprintf(fp, "\n");

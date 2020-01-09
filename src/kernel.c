@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2016 David Anderson
- * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2017 David Anderson
+ * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 #include <elf.h>
 #include <libgen.h>
 #include <ctype.h>
+#include <stdbool.h>
 
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
 static void show_module_taint(void);
@@ -47,10 +48,13 @@ static void dump_timer_data(void);
 static void dump_timer_data_tvec_bases_v1(void);
 static void dump_timer_data_tvec_bases_v2(void);
 static void dump_timer_data_tvec_bases_v3(void);
+static void dump_timer_data_timer_bases(void);
 struct tv_range;
 static void init_tv_ranges(struct tv_range *, int, int, int);
 static int do_timer_list(ulong,int, ulong *, void *,ulong *,struct tv_range *);
-static int do_timer_list_v3(ulong,int, ulong *, void *,ulong *);
+static int do_timer_list_v3(ulong, int, ulong *, void *,ulong *);
+struct timer_bases_data;
+static int do_timer_list_v4(struct timer_bases_data *);
 static int compare_timer_data(const void *, const void *);
 static void panic_this_kernel(void);
 static void dump_waitq(ulong, char *);
@@ -82,6 +86,9 @@ static void show_kernel_taints(char *, int);
 static void dump_dmi_info(void);
 static void list_source_code(struct gnu_request *, int);
 static void source_tree_init(void);
+static ulong dump_audit_skb_queue(ulong);
+static ulong __dump_audit(char *);
+static void dump_audit(void);
 
 
 /*
@@ -113,10 +120,9 @@ kernel_init()
 		kt->init_begin = symbol_value("__init_begin");
 		kt->init_end = symbol_value("__init_end");
 	}
-	if (symbol_exists("_end"))
-		kt->end = symbol_value("_end");
-	else
-		kt->end = highest_bss_symbol();
+	kt->end = highest_bss_symbol();
+	if ((sp1 = kernel_symbol_search("_end")) && (sp1->value > kt->end)) 
+		kt->end = sp1->value;
 	
 	/*
 	 *  For the traditional (non-pv_ops) Xen architecture, default to writable 
@@ -568,7 +574,11 @@ kernel_init()
 		}
 	}
 
-	if (per_cpu_symbol_search("per_cpu__tvec_bases")) {
+	if (per_cpu_symbol_search("timer_bases")) {
+		kt->flags2 |= TIMER_BASES;
+		MEMBER_OFFSET_INIT(timer_base_vectors, "timer_base", "vectors");
+		STRUCT_SIZE_INIT(timer_base, "timer_base");
+	} else if (per_cpu_symbol_search("per_cpu__tvec_bases")) {
 		if (MEMBER_EXISTS("tvec_base", "migration_enabled"))
 			kt->flags2 |= TVEC_BASES_V3;
 		else
@@ -1563,11 +1573,16 @@ list_source_code(struct gnu_request *req, int count_entered)
 /*
  *  From either a syment pointer, or a virtual address evaluated
  *  from a symbol name plus an offset value, determine whether 
- *  there are multiple symbols with the same name.  
-
+ *  there are multiple symbols with the same name, or if it is
+ *  determined to be an invalid expression of a text address.
+ *
  *  If there are multiple text symbols with the same name, then 
  *  display a "duplicate text symbols found" message followed by
  *  a list of each symbol's information, and return FALSE.
+ *
+ *  If a symbol name plus and offset value evaluates to an address 
+ *  that goes beyond the end of the text function, print an "invalid 
+ *  expression" message, and return FALSE;
  * 
  *  If there is one text symbol and one or more data symbols with
  *  the same name, reset the incoming address based upon the 
@@ -1585,15 +1600,37 @@ static int
 resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, int radix)
 {
 	int text_symbols;
-	struct syment *sp, *sp_orig, *first_text_sp;
+	struct syment *sp, *sp_orig, *first_text_sp, *sp_arg, *sp_addr;
 	ulong offset, radix_flag;
+	char buf[BUFSIZE];
+	char *op;
+
+	sp_arg = NULL;
+	if (!sp_in && !IS_A_NUMBER(arg)) {
+		strcpy(buf, arg);
+		strip_beginning_char(buf, '(');
+		strip_ending_char(buf, ')');
+		clean_line(buf);
+		if ((op = strpbrk(buf, "><+-&|*/%^"))) {
+			*op = NULLCHAR;
+			clean_line(buf);
+			if ((sp = symbol_search(buf)) && is_symbol_text(sp))
+				sp_arg = sp;
+		}
+	}
 
 	if (sp_in) {
 		sp_orig = sp_in;
 		offset = 0;
 	} else if ((sp_orig = value_search(req->addr, &offset))) {
-		if (!strstr(arg, sp_orig->name))
+		if (!strstr(arg, sp_orig->name)) {
+			if (sp_arg && (sp_orig != sp_arg)) {
+				error(INFO, "invalid expression: %s evaluates to: %s+%lx\n", 
+					arg, sp_orig->name, offset);
+				return FALSE;
+			}
 			return TRUE;
+		}
 	} else {
 		if (CRASHDEBUG(1))
 			error(INFO, "%s: no text symbol found\n", arg);
@@ -1602,6 +1639,19 @@ resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, in
 
 	if (symbol_name_count(sp_orig->name) <= 1)
 		return TRUE;
+
+	if (sp_arg) {
+		sp_addr = value_search(req->addr, &offset);
+		if (sp_arg != sp_addr) {
+			if (STREQ(sp_arg->name, sp_addr->name)) {
+				sp_orig = sp_arg;
+				goto duplicates;
+			}
+			error(INFO, "invalid expression: %s evaluates to %s: %s+%lx\n", 
+				arg, sp_addr->name, offset);
+			return FALSE;
+		}
+	}
 
 	text_symbols = 0;
 	first_text_sp = NULL;
@@ -1637,6 +1687,7 @@ resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, in
 		return TRUE;
 	}
 
+duplicates:
 	/*
 	 *  Multiple text symbols with the same name exist.
 	 *  Display them all and return FALSE.
@@ -1649,9 +1700,9 @@ resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, in
 	do {
 		if (is_symbol_text(sp)) {
 			if (module_symbol(sp->value, NULL, NULL, NULL, 0))
-				show_symbol(sp, offset, SHOW_LINENUM|SHOW_MODULE|radix_flag);
+				show_symbol(sp, 0, SHOW_LINENUM|SHOW_MODULE|radix_flag);
 			else
-				show_symbol(sp, offset, SHOW_LINENUM|radix_flag);
+				show_symbol(sp, 0, SHOW_LINENUM|radix_flag);
 		}
 	} while ((sp = symbol_search_next(sp->name, sp)));
 
@@ -1817,7 +1868,7 @@ cmd_dis(void)
 				FREEBUF(req);
 				return;
 			}
-                } else if (hexadecimal(args[optind], 0)) {
+                } else if (hexadecimal(args[optind], 0) && !symbol_exists(args[optind])) {
 			req->buf = args[optind];
                         req->addr = htol(args[optind], FAULT_ON_ERROR, NULL);
 			sp = value_search(req->addr, &offset);
@@ -2332,10 +2383,10 @@ cmd_bt(void)
 	bt = &bt_info;
 	BZERO(bt, sizeof(struct bt_info));
 
-	if (kt->flags & USE_OLD_BT)
-		bt->flags |= BT_OLD_BACK_TRACE;
+	if (kt->flags & USE_OPT_BT)
+		bt->flags |= BT_OPT_BACK_TRACE;
 
-	while ((c = getopt(argcnt, args, "D:fFI:S:c:aAloreEgstTdxR:O")) != EOF) {
+	while ((c = getopt(argcnt, args, "D:fFI:S:c:aAloreEgstTdxR:Ov")) != EOF) {
                 switch (c)
 		{
 		case 'f':
@@ -2350,16 +2401,17 @@ cmd_bt(void)
 			break;
 
 		case 'o':
-			if (XEN_HYPER_MODE())
+			if (!(machine_type("X86") || machine_type("X86_64") || machine_type("ARM64")) ||
+			    XEN_HYPER_MODE())
 				option_not_supported(c);
-			bt->flags |= BT_OLD_BACK_TRACE;
+			bt->flags |= BT_OPT_BACK_TRACE;
 			break;
 
 		case 'O':
-			if (!(machine_type("X86") || machine_type("X86_64")) ||
+			if (!(machine_type("X86") || machine_type("X86_64") || machine_type("ARM64")) ||
 			    XEN_HYPER_MODE()) 
 				option_not_supported(c);
-			else if (kt->flags & USE_OLD_BT) { 
+			else if (kt->flags & USE_OPT_BT) { 
 				/* 
 				 *  Make this setting idempotent across the use of
 				 *  $HOME/.crashrc, ./.crashrc, and "-i input" files. 
@@ -2367,14 +2419,17 @@ cmd_bt(void)
 				 *  leave it alone.
 			 	 */
 				if (pc->flags & INIT_IFILE) {
-					error(INFO, "use old bt method by default (already set)\n");
+					error(INFO, "use %s bt method by default (already set)\n",
+						machine_type("ARM64") ? "optional" : "old");
 					return;
 				}
-				kt->flags &= ~USE_OLD_BT;
-				error(INFO, "use new bt method by default\n");
+				kt->flags &= ~USE_OPT_BT;
+				error(INFO, "use %s bt method by default\n",
+					machine_type("ARM64") ? "original" : "new");
 			} else {
-				kt->flags |= USE_OLD_BT;
-				error(INFO, "use old bt method by default\n");
+				kt->flags |= USE_OPT_BT;
+				error(INFO, "use %s bt method by default\n",
+					machine_type("ARM64") ? "optional" : "old");
 			}
 			return;
 
@@ -2511,6 +2566,12 @@ cmd_bt(void)
 		case 't':
 			bt->flags |= BT_TEXT_SYMBOLS;
 			break;
+
+		case 'v':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
+			check_stack_overflow();
+			return;
 
 		default:
 			argerrs++;
@@ -2800,8 +2861,7 @@ back_trace(struct bt_info *bt)
 		return;
 	}
 
-	if (LIVE() && !(bt->flags & BT_EFRAME_SEARCH) && 
-            ((bt->task == tt->this_task) || is_task_active(bt->task))) {
+	if (LIVE() && !(bt->flags & BT_EFRAME_SEARCH) && is_task_active(bt->task)) {
 
 		if (BT_REFERENCE_CHECK(bt) ||
 		    bt->flags & (BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT))
@@ -2901,6 +2961,10 @@ back_trace(struct bt_info *bt)
 	}
 
 	if (ACTIVE() && !INSTACK(esp, bt)) {
+		if (!LOCAL_ACTIVE()) {
+			error(INFO, "task no longer exists\n");
+			return;
+		}
 		sprintf(buf, "/proc/%ld", bt->tc->pid); 
 		if (!file_exists(buf, NULL))
 			error(INFO, "task no longer exists\n");
@@ -2944,14 +3008,19 @@ back_trace(struct bt_info *bt)
         		switch (bt->flags & (BT_HARDIRQ|BT_SOFTIRQ))
         		{
         		case BT_HARDIRQ:
-				btloc.hp->eip = symbol_value("do_IRQ");
-				if (symbol_exists("__do_IRQ"))
-					btloc.hp->esp = ULONG(bt->stackbuf +
-					    OFFSET(thread_info_previous_esp));
-				else
-					btloc.hp->esp = ULONG(bt->stackbuf +
-					    SIZE(irq_ctx) - 
-					    (sizeof(char *)*2));
+				if (kernel_symbol_exists("hardirq_stack") &&
+				    STRUCT_EXISTS("irq_stack")) {
+					btloc.hp->eip = symbol_value("handle_irq");
+					btloc.hp->esp = ULONG(bt->stackbuf);
+				} else {
+					btloc.hp->eip = symbol_value("do_IRQ");
+					if (symbol_exists("__do_IRQ"))
+						btloc.hp->esp = ULONG(bt->stackbuf +
+					    		OFFSET(thread_info_previous_esp));
+					else
+						btloc.hp->esp = ULONG(bt->stackbuf +
+					    		SIZE(irq_ctx) - (sizeof(char *)*2));
+				}
 				fprintf(fp, "--- <hard IRQ> ---\n");
 				if (in_irq_ctx(BT_SOFTIRQ, bt->tc->processor, btloc.hp->esp)) {
 					btloc.flags |= BT_SOFTIRQ;
@@ -2962,8 +3031,14 @@ back_trace(struct bt_info *bt)
 
         		case BT_SOFTIRQ:
 				btloc.hp->eip = symbol_value("do_softirq");
-                		btloc.hp->esp = ULONG(bt->stackbuf +
-                        		OFFSET(thread_info_previous_esp));
+				if (kernel_symbol_exists("softirq_stack") &&
+				    STRUCT_EXISTS("irq_stack")) {
+					if (kernel_symbol_exists("do_softirq_own_stack"))
+						btloc.hp->eip = symbol_value("do_softirq_own_stack");
+					btloc.hp->esp = ULONG(bt->stackbuf);
+				} else
+					btloc.hp->esp = ULONG(bt->stackbuf +
+						OFFSET(thread_info_previous_esp));
 				fprintf(fp, "--- <soft IRQ> ---\n");
                 		break;
         		}
@@ -3024,32 +3099,47 @@ restore_stack(struct bt_info *bt)
 	switch (bt->flags & (BT_HARDIRQ|BT_SOFTIRQ)) 
 	{ 
 	case BT_HARDIRQ:
-		retvaddr = ULONG(bt->stackbuf +
-			SIZE(irq_ctx) - sizeof(char *));
-		if ((sp = value_search(retvaddr, NULL)) && 
-			STREQ(sp->name, "do_IRQ"))
-			bt->instptr = retvaddr; 
-		else
-			bt->instptr = symbol_value("do_IRQ");
-		if (symbol_exists("__do_IRQ"))
-            		bt->stkptr = ULONG(bt->stackbuf +
-                     		OFFSET(thread_info_previous_esp));
-		else
-			bt->stkptr = ULONG(bt->stackbuf + 
-				SIZE(irq_ctx) - (sizeof(char *)*2));
+		if (kernel_symbol_exists("hardirq_stack") &&
+		    STRUCT_EXISTS("irq_stack")) {
+			bt->instptr = symbol_value("handle_irq");
+			bt->stkptr = ULONG(bt->stackbuf);
+		} else {
+			retvaddr = ULONG(bt->stackbuf +
+				SIZE(irq_ctx) - sizeof(char *));
+			if ((sp = value_search(retvaddr, NULL)) && 
+				STREQ(sp->name, "do_IRQ"))
+				bt->instptr = retvaddr; 
+			else
+				bt->instptr = symbol_value("do_IRQ");
+			if (symbol_exists("__do_IRQ"))
+				bt->stkptr = ULONG(bt->stackbuf +
+					OFFSET(thread_info_previous_esp));
+			else
+				bt->stkptr = ULONG(bt->stackbuf + 
+					SIZE(irq_ctx) - (sizeof(char *)*2));
+		}
 		type = BT_HARDIRQ;
 		break;
 
 	case BT_SOFTIRQ:
-		retvaddr = ULONG(bt->stackbuf +
-			SIZE(irq_ctx) - sizeof(char *));
-		if ((sp = value_search(retvaddr, NULL)) && 
-			STREQ(sp->name, "do_softirq"))
-			bt->instptr = retvaddr; 
-		else
-			bt->instptr = symbol_value("do_softirq");
-               	bt->stkptr = ULONG(bt->stackbuf +
-                       	OFFSET(thread_info_previous_esp));
+		if (kernel_symbol_exists("softirq_stack") &&
+		    STRUCT_EXISTS("irq_stack")) {
+			if (kernel_symbol_exists("do_softirq_own_stack"))
+				bt->instptr = symbol_value("do_softirq_own_stack");
+			else
+				bt->instptr = symbol_value("do_softirq");
+			bt->stkptr = ULONG(bt->stackbuf);
+		} else {
+			retvaddr = ULONG(bt->stackbuf +
+				SIZE(irq_ctx) - sizeof(char *));
+			if ((sp = value_search(retvaddr, NULL)) && 
+				STREQ(sp->name, "do_softirq"))
+				bt->instptr = retvaddr; 
+			else
+				bt->instptr = symbol_value("do_softirq");
+	               	bt->stkptr = ULONG(bt->stackbuf +
+	                       	OFFSET(thread_info_previous_esp));
+		}
 		type = BT_SOFTIRQ;
 		break;
 	}
@@ -3455,6 +3545,7 @@ module_init(void)
 
 		total += nsyms;
 		total += 2;  /* store the module's start/ending addresses */
+		total += 2;  /* and the init start/ending addresses */
 
 		/*
 		 *  If the module has kallsyms, set up to grab them as well.
@@ -3942,6 +4033,108 @@ check_specified_module_tree(char *module, char *gdb_buffer)
 }
 
 static void
+show_module_taint_4_10(void)
+{
+	int i, j, bx;
+	struct load_module *lm;
+	int maxnamelen;
+	int found;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	struct syment *sp;
+	ulong *taintsp, taints;
+	bool tnt_mod;
+	char tnt_true;
+	int tnts_len;
+	ulong tnts_addr;
+	char *modbuf;
+
+	if (INVALID_MEMBER(module_taints)) {
+		MEMBER_OFFSET_INIT(module_taints, "module", "taints");
+		STRUCT_SIZE_INIT(taint_flag, "taint_flag");
+		MEMBER_OFFSET_INIT(tnt_true, "taint_flag", "true");
+		if (INVALID_MEMBER(tnt_true))
+			MEMBER_OFFSET_INIT(tnt_true, "taint_flag", "c_true");
+		MEMBER_OFFSET_INIT(tnt_mod, "taint_flag", "module");
+	}
+
+	modbuf = GETBUF(SIZE(module));
+
+	for (i = found = maxnamelen = 0; i < kt->mods_installed; i++) {
+		lm = &st->load_modules[i];
+
+		readmem(lm->module_struct, KVADDR, modbuf, SIZE(module),
+			"module struct", FAULT_ON_ERROR);
+
+		if (MEMBER_SIZE("module", "taints") == sizeof(ulong))
+			taints = ULONG(modbuf + OFFSET(module_taints));
+		else
+			taints = UINT(modbuf + OFFSET(module_taints));
+
+		if (taints) {
+			found++;
+			maxnamelen = strlen(lm->mod_name) > maxnamelen ?
+				strlen(lm->mod_name) : maxnamelen;
+		}
+	}
+
+	if (!found) {
+		fprintf(fp, "no tainted modules\n");
+		FREEBUF(modbuf);
+		return;
+	}
+
+	tnts_len = get_array_length("taint_flags", NULL, 0);
+	sp = symbol_search("taint_flags");
+	tnts_addr = sp->value;
+
+	fprintf(fp, "%s  %s\n",
+			mkstring(buf2, maxnamelen, LJUST, "NAME"), "TAINTS");
+
+	for (i = 0; i < st->mods_installed; i++) {
+
+		lm = &st->load_modules[i];
+		bx = 0;
+		buf1[0] = '\0';
+
+		readmem(lm->module_struct, KVADDR, modbuf, SIZE(module),
+				"module struct", FAULT_ON_ERROR);
+
+		if (MEMBER_SIZE("module", "taints") == sizeof(ulong))
+			taints = ULONG(modbuf + OFFSET(module_taints));
+		else
+			taints = UINT(modbuf + OFFSET(module_taints));
+
+		if (!taints)
+			continue;
+		taintsp = &taints;
+
+		for (j = 0; j < tnts_len; j++) {
+			readmem((tnts_addr + j * SIZE(taint_flag)) +
+					OFFSET(tnt_mod),
+					KVADDR, &tnt_mod, sizeof(bool),
+					"tnt mod", FAULT_ON_ERROR);
+			if (!tnt_mod)
+				continue;
+			if (NUM_IN_BITMAP(taintsp, j)) {
+				readmem((tnts_addr + j * SIZE(taint_flag)) +
+						OFFSET(tnt_true),
+						KVADDR, &tnt_true, sizeof(char),
+						"tnt true", FAULT_ON_ERROR);
+				buf1[bx++] = tnt_true;
+			}
+		}
+
+		buf1[bx++] = '\0';
+
+		fprintf(fp, "%s  %s\n", mkstring(buf2, maxnamelen,
+					LJUST, lm->mod_name), buf1);
+	}
+
+	FREEBUF(modbuf);
+}
+
+static void
 show_module_taint(void)
 {
 	int i, j, bx;
@@ -3958,6 +4151,12 @@ show_module_taint(void)
 	int tnts_exists, tnts_len;
 	ulong tnts_addr;
 	char *modbuf;
+
+	if (VALID_STRUCT(taint_flag) ||
+	    (kernel_symbol_exists("taint_flags") && STRUCT_EXISTS("taint_flag"))) {
+		show_module_taint_4_10();
+		return;
+	}
 
 	if (INVALID_MEMBER(module_taints) &&
 	    INVALID_MEMBER(module_license_gplok)) {
@@ -4604,7 +4803,7 @@ cmd_log(void)
 
 	msg_flags = 0;
 
-        while ((c = getopt(argcnt, args, "tdm")) != EOF) {
+        while ((c = getopt(argcnt, args, "tdma")) != EOF) {
                 switch(c)
                 {
 		case 't':
@@ -4616,6 +4815,9 @@ cmd_log(void)
                 case 'm':
                         msg_flags |= SHOW_LOG_LEVEL;
                         break;
+		case 'a':
+			msg_flags |= SHOW_LOG_AUDIT;
+			break;
                 default:
                         argerrs++;
                         break;
@@ -4624,6 +4826,11 @@ cmd_log(void)
 
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (msg_flags & SHOW_LOG_AUDIT) {
+		dump_audit();
+		return;
+	}
 
 	dump_log(msg_flags);
 }
@@ -5600,8 +5807,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sKMOD_V2", others++ ? "|" : "");
 	if (kt->flags & KALLSYMS_V2)
 		fprintf(fp, "%sKALLSYMS_V2", others++ ? "|" : "");
-	if (kt->flags & USE_OLD_BT)
-		fprintf(fp, "%sUSE_OLD_BT", others++ ? "|" : "");
+	if (kt->flags & USE_OPT_BT)
+		fprintf(fp, "%sUSE_OPT_BT", others++ ? "|" : "");
 	if (kt->flags & ARCH_XEN)
 		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
 	if (kt->flags & ARCH_PVOPS_XEN)
@@ -5645,6 +5852,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sKASLR_CHECK", others++ ? "|" : "");
 	if (kt->flags2 & TVEC_BASES_V3)
 		fprintf(fp, "%sTVEC_BASES_V3", others++ ? "|" : "");
+	if (kt->flags2 & TIMER_BASES)
+		fprintf(fp, "%sTIMER_BASES", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
         fprintf(fp, "         stext: %lx\n", kt->stext);
@@ -5930,7 +6139,7 @@ cmd_irq(void)
 	int nr_irqs;
 	ulong *cpus;
 	int show_intr, choose_cpu;
-	char buf[10];
+	char buf[15];
 	char arg_buf[BUFSIZE];
 
 	cpus = NULL;
@@ -6045,7 +6254,7 @@ cmd_irq(void)
 		}
 
 		fprintf(fp, "     ");
-		BZERO(buf, 10);
+		BZERO(buf, 15);
 
 		for (i = 0; i < kt->cpus; i++) {
 			if (hide_offline_cpu(i))
@@ -7241,7 +7450,7 @@ dump_hrtimer_clock_base(const void *hrtimer_bases, const int num)
 	offset = 0;
 	if (VALID_MEMBER(hrtimer_clock_base_offset))
 		offset = ktime_to_ns(base + OFFSET(hrtimer_clock_base_offset));
-	now = current_time * 1000000000LL / machdep->hz + offset;
+	now = current_time * (1000000000LL / machdep->hz) + offset;
 
 	dump_active_timers(base, now);
 }
@@ -7263,7 +7472,7 @@ dump_hrtimer_base(const void *hrtimer_bases, const int num)
 
 	/* get current time(uptime) */
 	get_uptime(NULL, &current_time);
-	now = current_time * 1000000000LL / machdep->hz;
+	now = current_time * (1000000000LL / machdep->hz);
 
 	dump_active_timers(base, now);
 }
@@ -7548,7 +7757,10 @@ dump_timer_data(void)
 	int flen, tdx, old_timers_exist;
         struct tv_range tv[TVN];
 
-	if (kt->flags2 & TVEC_BASES_V3) {
+	if (kt->flags2 & TIMER_BASES) {
+		dump_timer_data_timer_bases();
+		return;
+	} else if (kt->flags2 & TVEC_BASES_V3) {
 		dump_timer_data_tvec_bases_v3();
 		return;
 	} else if (kt->flags & TVEC_BASES_V2) {
@@ -7854,6 +8066,7 @@ next_cpu:
 	        fprintf(fp, "TVEC_BASES[%d]: [OFFLINE]\n", cpu);
 		if (++cpu < kt->cpus)
 			goto next_cpu;
+		return;
 	}
 
 
@@ -7995,6 +8208,7 @@ next_cpu:
 	        fprintf(fp, "TVEC_BASES[%d]: [OFFLINE]\n", cpu);
 		if (++cpu < kt->cpus)
 			goto next_cpu;
+		return;
 	}
 
 	count = 0;
@@ -8435,6 +8649,217 @@ do_timer_list_v3(ulong vec_kvaddr,
 	return(td ? tdx : count);
 }
 
+#define TIMERS_CHUNK (100)
+
+struct timer_bases_data {
+	int total, cnt, num_vectors;
+	ulong *vectors;
+	ulong timer_base;
+	struct timer_data *timers; 
+};
+
+static int
+do_timer_list_v4(struct timer_bases_data *data)
+{
+	int i, t, timer_cnt, found;
+	struct list_data list_data, *ld;
+	ulong *timer_list;
+	ulong expires, function;
+	long oldsize;
+	char *timer_list_buf;
+
+	timer_list_buf = GETBUF(SIZE(timer_list));
+	ld = &list_data;
+
+	for (i = found = 0; i < data->num_vectors; i++) {
+		if (data->vectors[i] == 0)
+			continue;
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, "%lx vectors[%d]: %lx\n", 
+			    data->timer_base + OFFSET(timer_base_vectors) + (i * sizeof(void *)), 
+				i, data->vectors[i]);
+
+		BZERO(ld, sizeof(struct list_data));
+		ld->start = data->vectors[i];
+		ld->list_head_offset = OFFSET(timer_list_entry);
+		ld->end = 0;
+		ld->flags = RETURN_ON_LIST_ERROR;
+
+		hq_open();
+		if ((timer_cnt = do_list(ld)) == -1) {
+			/* Ignore chains with errors */
+			if (CRASHDEBUG(1))
+				error(INFO, 
+		"ignoring faulty timer_list in timer_base.vector[%d] list\n",
+					i);
+			hq_close();
+			continue; 
+		}
+		if (!timer_cnt) {
+			hq_close();
+			continue;
+		}
+
+		timer_list = (ulong *)GETBUF(timer_cnt * sizeof(ulong));
+		timer_cnt = retrieve_list(timer_list, timer_cnt);
+		hq_close();
+
+		for (t = 0; t < timer_cnt; t++) {
+			if (CRASHDEBUG(1))
+				fprintf(fp, "  %lx\n", timer_list[t]);
+
+			if (!readmem(timer_list[t], KVADDR, timer_list_buf,
+			    SIZE(timer_list), "timer_list buffer", QUIET|RETURN_ON_ERROR))
+				continue;
+
+			expires = ULONG(timer_list_buf + OFFSET(timer_list_expires));
+			function = ULONG(timer_list_buf + OFFSET(timer_list_function));
+
+			data->timers[data->cnt].address = timer_list[t];
+			data->timers[data->cnt].expires = expires;
+			data->timers[data->cnt].function = function;
+			data->cnt++;
+
+			if (data->cnt == data->total) {
+				oldsize = data->total * sizeof(struct timer_data);
+				RESIZEBUF(data->timers, oldsize, oldsize * 2);
+				data->total *= 2;
+			}
+
+			found++;
+	 	}
+
+		FREEBUF(timer_list);
+
+	}
+
+	FREEBUF(timer_list_buf);
+
+	return found;
+}
+
+/*
+ *  Linux 4.8 timers use new timer_bases[][]
+ */
+static void
+dump_timer_data_timer_bases(void)
+{
+	int i, cpu, flen, base, nr_bases, found, display;
+	struct syment *sp;
+	ulong timer_base, jiffies, function;
+	struct timer_bases_data data;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+
+	if (!(data.num_vectors = get_array_length("timer_base.vectors", NULL, 0)))
+		error(FATAL, "cannot determine timer_base.vectors[] array size\n");
+	data.vectors = (ulong *)GETBUF(data.num_vectors * sizeof(void *));
+	data.timers = (struct timer_data *)GETBUF(sizeof(struct timer_data) * TIMERS_CHUNK);
+	data.total = TIMERS_CHUNK;
+	data.cnt = 0;
+
+	nr_bases = kernel_symbol_exists("sysctl_timer_migration") ? 2 : 1;
+	cpu = 0;
+
+	get_symbol_data("jiffies", sizeof(ulong), &jiffies);
+	sprintf(buf1, "%ld", jiffies);
+	flen = MAX(strlen(buf1), strlen("JIFFIES"));
+	fprintf(fp, "%s\n", mkstring(buf1, flen, LJUST, "JIFFIES"));
+	fprintf(fp, "%s\n\n", mkstring(buf1, flen,
+		RJUST|LONG_DEC,MKSTR(jiffies)));
+
+next_cpu:
+	/*
+	 * hide data of offline cpu and goto next cpu
+	 */
+	if (hide_offline_cpu(cpu)) {
+		fprintf(fp, "TIMER_BASES[%d]: [OFFLINE]\n", cpu);
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+		goto done;
+	}
+
+	base = 0;
+
+	sp = per_cpu_symbol_search("per_cpu__timer_bases");
+	if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+		timer_base = sp->value + kt->__per_cpu_offset[cpu];
+	else
+		timer_base = sp->value;
+
+	if (cpu)
+		fprintf(fp, "\n");
+next_base:
+
+	fprintf(fp, "TIMER_BASES[%d][%s]: %lx\n", cpu,  
+		base == 0 ? "BASE_STD" : "BASE_DEF", timer_base);
+
+	readmem(timer_base + OFFSET(timer_base_vectors), KVADDR, data.vectors, 
+		data.num_vectors * sizeof(void *), "timer_base.vectors[]", FAULT_ON_ERROR); 
+	data.cnt = 0;
+	data.timer_base = timer_base;
+
+	found = do_timer_list_v4(&data);
+	
+	qsort(data.timers, found, sizeof(struct timer_data), compare_timer_data);
+
+	fprintf(fp, "  %s     TIMER_LIST     FUNCTION\n",
+		mkstring(buf1, flen, LJUST, "EXPIRES"));
+
+	for (i = 0; i < found; i++) {
+		display = FALSE;
+
+		if (is_kernel_text(data.timers[i].function)) {
+			display = TRUE;
+			function = data.timers[i].function;
+		} else {
+			if (readmem(data.timers[i].function, KVADDR, &function,
+			    sizeof(ulong), "timer function",
+			    RETURN_ON_ERROR|QUIET) && is_kernel_text(function))
+				display = TRUE;
+			else {
+				if (LIVE()) {
+					if (CRASHDEBUG(1))
+						fprintf(fp, "(invalid/stale entry at %lx)\n", 
+							data.timers[i].address);
+					display = FALSE;
+				} else {
+					function = data.timers[i].function;
+					display = TRUE;
+				}
+			}
+		}
+
+		if (display) {
+			fprintf(fp, "  %s", 
+				mkstring(buf1, flen, RJUST|LONG_DEC, MKSTR(data.timers[i].expires)));
+			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(data.timers[i].address));
+			fprintf(fp, "  %s  ", mkstring(buf2, 16, CENTER, buf1));
+			fprintf(fp, "%s  <%s>\n",
+				mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, 
+				MKSTR(data.timers[i].function)),
+				value_to_symstr(function, buf2, 0));
+		}
+	}
+
+	if (!found)
+		fprintf(fp, "  (none)\n");
+
+	if ((nr_bases == 2) && (base == 0)) {
+		base++;
+		timer_base += SIZE(timer_base);
+		goto next_base;
+	}
+
+	if (++cpu < kt->cpus)
+		goto next_cpu;
+done:
+	FREEBUF(data.vectors);
+	FREEBUF(data.timers);
+}
+
+
 /*
  *  Panic a live system by exploiting this code in do_exit():
  *
@@ -8449,7 +8874,7 @@ panic_this_kernel(void)
 {
 	pid_t zero_pid = 0;
 
-	if (DUMPFILE())
+	if (!LOCAL_ACTIVE())
 		error(FATAL, "cannot panic a dumpfile!\n");
 
 	if (!(pc->flags & MFD_RDWR) || (pc->flags & MEMMOD))
@@ -10177,6 +10602,71 @@ dump_variable_length_record(void)
 }
 
 static void
+show_kernel_taints_v4_10(char *buf, int verbose)
+{
+	int i, bx;
+	char tnt_true, tnt_false;
+	int tnts_len;
+	ulong tnts_addr;
+	ulong tainted_mask, *tainted_mask_ptr;
+	struct syment *sp;
+
+	if (!VALID_STRUCT(taint_flag)) {
+		STRUCT_SIZE_INIT(taint_flag, "taint_flag");
+		MEMBER_OFFSET_INIT(tnt_true, "taint_flag", "true");
+		MEMBER_OFFSET_INIT(tnt_false, "taint_flag", "false");
+		if (INVALID_MEMBER(tnt_true)) {
+			MEMBER_OFFSET_INIT(tnt_true, "taint_flag", "c_true");
+			MEMBER_OFFSET_INIT(tnt_false, "taint_flag", "c_false");
+		}
+	}
+
+	bx = 0;
+	buf[0] = '\0';
+
+	/*
+	 *  Make sure that all dependencies are valid to prevent
+	 *  a fatal error from killing the session during the 
+	 *  pre-RUNTIME system banner display.
+	 */ 
+	if (!(pc->flags & RUNTIME)) {
+		if (INVALID_MEMBER(tnt_true) || INVALID_MEMBER(tnt_false) ||
+		    !kernel_symbol_exists("tainted_mask"))
+			return;
+	}
+
+	tnts_len = get_array_length("taint_flags", NULL, 0);
+	sp = symbol_search("taint_flags");
+	tnts_addr = sp->value;
+
+	get_symbol_data("tainted_mask", sizeof(ulong), &tainted_mask);
+	tainted_mask_ptr = &tainted_mask;
+
+	for (i = 0; i < tnts_len; i++) {
+		if (NUM_IN_BITMAP(tainted_mask_ptr, i)) {
+			readmem((tnts_addr + i * SIZE(taint_flag)) +
+					OFFSET(tnt_true),
+				KVADDR, &tnt_true, sizeof(char),
+				"tnt true", FAULT_ON_ERROR);
+				buf[bx++] = tnt_true;
+		} else {
+			readmem((tnts_addr + i * SIZE(taint_flag)) +
+					OFFSET(tnt_false),
+				KVADDR, &tnt_false, sizeof(char),
+				"tnt false", FAULT_ON_ERROR);
+			if (tnt_false != ' ' && tnt_false != '-' &&
+			    tnt_false != 'G')
+				buf[bx++] = tnt_false;
+		}
+	}
+
+	buf[bx++] = '\0';
+
+	if (verbose)
+		fprintf(fp, "TAINTED_MASK: %lx  %s\n", tainted_mask, buf);
+}
+
+static void
 show_kernel_taints(char *buf, int verbose)
 {
 	int i, bx;
@@ -10187,6 +10677,12 @@ show_kernel_taints(char *buf, int verbose)
 	ulong tainted_mask, *tainted_mask_ptr;
 	int tainted;
 	struct syment *sp;
+
+	if (VALID_STRUCT(taint_flag) ||
+	    (kernel_symbol_exists("taint_flags") && STRUCT_EXISTS("taint_flag"))) {
+		show_kernel_taints_v4_10(buf, verbose);
+		return;
+	}
 
 	if (!VALID_STRUCT(tnt)) { 
                 STRUCT_SIZE_INIT(tnt, "tnt");
@@ -10306,4 +10802,134 @@ dump_dmi_info(void)
 	} 
 
 	close_tmpfile();
+}
+
+#define NLMSG_ALIGNTO 4
+#define NLMSG_DATA(nlh) (nlh + roundup(SIZE(nlmsghdr), NLMSG_ALIGNTO))
+
+static ulong
+dump_audit_skb_queue(ulong audit_skb_queue)
+{
+	ulong skb_buff_head_next = 0, p;
+	uint32_t qlen = 0;
+
+	if (INVALID_SIZE(nlmsghdr)) {
+		STRUCT_SIZE_INIT(nlmsghdr, "nlmsghdr");
+		MEMBER_OFFSET_INIT(nlmsghdr_nlmsg_type, "nlmsghdr", "nlmsg_type");
+		MEMBER_SIZE_INIT(nlmsghdr_nlmsg_type, "nlmsghdr", "nlmsg_type");
+		MEMBER_OFFSET_INIT(sk_buff_head_next, "sk_buff_head", "next");
+		MEMBER_OFFSET_INIT(sk_buff_head_qlen, "sk_buff_head", "qlen");
+		MEMBER_SIZE_INIT(sk_buff_head_qlen, "sk_buff_head", "qlen");
+		MEMBER_OFFSET_INIT(sk_buff_data, "sk_buff", "data");
+		MEMBER_OFFSET_INIT(sk_buff_len, "sk_buff", "len");
+		MEMBER_OFFSET_INIT(sk_buff_next, "sk_buff", "next");
+		MEMBER_SIZE_INIT(sk_buff_len, "sk_buff", "len");
+	}
+
+	readmem(audit_skb_queue + OFFSET(sk_buff_head_qlen),
+		KVADDR,
+		&qlen,
+		SIZE(sk_buff_head_qlen),
+		"audit_skb_queue.qlen",
+		FAULT_ON_ERROR);
+
+	if (!qlen)
+		return 0;
+
+	readmem(audit_skb_queue + OFFSET(sk_buff_head_next),
+		KVADDR,
+		&skb_buff_head_next,
+		sizeof(void *),
+		"audit_skb_queue.next",
+		FAULT_ON_ERROR);
+
+	if (!skb_buff_head_next)
+		error(FATAL, "audit_skb_queue.next: NULL\n");
+
+	p = skb_buff_head_next;
+	do {
+		ulong data, len, data_len;
+		uint16_t nlmsg_type;
+		char *buf = NULL;
+
+		if (CRASHDEBUG(2))
+			fprintf(fp, "%#016lx\n", p);
+
+		readmem(p + OFFSET(sk_buff_len),
+			KVADDR,
+			&len,
+			SIZE(sk_buff_len),
+			"sk_buff.data",
+			FAULT_ON_ERROR);
+
+		data_len = len - roundup(SIZE(nlmsghdr), NLMSG_ALIGNTO);
+
+		readmem(p + OFFSET(sk_buff_data),
+			KVADDR,
+			&data,
+			sizeof(void *),
+			"sk_buff.data",
+			FAULT_ON_ERROR);
+
+		if (!data)
+			error(FATAL, "sk_buff.data: NULL\n");
+
+		readmem(data + OFFSET(nlmsghdr_nlmsg_type),
+			KVADDR,
+			&nlmsg_type,
+			SIZE(nlmsghdr_nlmsg_type),
+			"nlmsghdr.nlmsg_type",
+			FAULT_ON_ERROR);
+
+		buf = GETBUF(data_len + 1);
+		readmem(NLMSG_DATA(data),
+			KVADDR,
+			buf,
+			data_len,
+			"sk_buff.data + sizeof(struct nlmsghdr)",
+			FAULT_ON_ERROR);
+		buf[data_len] = '\0';
+
+		fprintf(fp, "type=%u %s\n", nlmsg_type, buf);
+		FREEBUF(buf);
+
+		readmem(p + OFFSET(sk_buff_next),
+			KVADDR,
+			&p,
+			sizeof(void *),
+			"skb_buff.next",
+			FAULT_ON_ERROR);
+	} while (p != audit_skb_queue);
+
+	return qlen;
+}
+
+static ulong
+__dump_audit(char *symname)
+{
+	if (symbol_exists(symname)) {
+		if (CRASHDEBUG(1))
+			fprintf(fp, "# %s:\n", symname);
+		return dump_audit_skb_queue(symbol_value(symname));
+	}
+	return 0;
+}
+
+static void
+dump_audit(void)
+{
+	ulong qlen = 0;
+
+	if (symbol_exists("audit_skb_queue")) {
+		qlen += __dump_audit("audit_skb_hold_queue");
+		qlen += __dump_audit("audit_skb_queue");
+	} else if (symbol_exists("audit_queue")) {
+		qlen += __dump_audit("audit_hold_queue");
+		qlen += __dump_audit("audit_retry_queue");
+		qlen += __dump_audit("audit_queue");
+	} else
+		option_not_supported('a');
+
+	if (!qlen)
+		error(INFO, "kernel audit log is empty\n");
 }
