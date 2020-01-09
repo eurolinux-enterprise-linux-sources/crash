@@ -4,7 +4,7 @@
 Summary: Kernel analysis utility for live systems, netdump, diskdump, kdump, LKCD or mcore dumpfiles
 Name: crash
 Version: 7.2.3
-Release: 10%{?dist}
+Release: 8%{?dist}
 License: GPLv3
 Group: Development/Debuggers
 Source: http://people.redhat.com/anderson/crash-%{version}.tar.gz
@@ -26,9 +26,6 @@ Patch8: github_f294197b_bpf_idr.patch
 Patch9: github_28fa7bd0_ppc64_increase_VA_range.patch
 Patch10: github_5fe78861_ppc64_invalid_NIP.patch
 Patch11: github_7e393689_ppc64_bt_user_space.patch
-Patch12: github_6596f112_alternate_list_loop_detect.patch
-Patch13: github_0f65ae0c_readline_tab_completion.patch
-Patch14: github_6b93714b_cmdline.patch
 
 %description
 The core analysis suite is a self-contained tool that can be used to
@@ -61,9 +58,6 @@ offered by Mission Critical Linux, or the LKCD kernel patch.
 %patch9 -p1 -b github_28fa7bd0_ppc64_increase_VA_range.patch
 %patch10 -p1 -b github_5fe78861_ppc64_invalid_NIP.patch
 %patch11 -p1 -b github_7e393689_ppc64_bt_user_space.patch
-%patch12 -p1 -b github_6596f112_alternate_list_loop_detect.patch
-%patch13 -p1 -b github_0f65ae0c_readline_tab_completion.patch
-%patch14 -p1 -b github_6b93714b_cmdline.patch
 
 %build
 make RPMPKG="%{version}-%{release}" CFLAGS="%{optflags}"
@@ -92,16 +86,6 @@ rm -rf %{buildroot}
 %{_includedir}/*
 
 %changelog
-* Tue Jan  8 2019 Dave Anderson <anderson@redhat.com> - 7.2.3-10
-- Restrict command line to 1500 bytes
-  Resolves: rhbz#1663792
-
-* Wed Jan  2 2019 Dave Anderson <anderson@redhat.com> - 7.2.3-9
-- Alternate list loop detection option
-  Resolves: rhbz#1595389
-- Readline library tab completion plugin
-  Resolves: rhbz#1656165
-
 * Mon Sep 17 2018 Dave Anderson <anderson@redhat.com> - 7.2.3-8
 - Fix ppc64 "bt" command failure reporting invalid NIP value for a user-space task. 
   Resolves: rhbz#1617936
